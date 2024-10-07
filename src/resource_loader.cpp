@@ -1,0 +1,214 @@
+module;
+
+#include <algorithm>
+#include <cassert>
+#include <filesystem>
+#include <mutex>
+#include <variant>
+#include <vector>
+
+module dreamrender;
+
+import :debug;
+import :resource_loader;
+import :texture;
+
+import glm;
+import sdl2;
+import spdlog;
+import vulkan_hpp;
+import vma;
+
+namespace dreamrender {
+
+    constexpr unsigned int safe_size = 256;
+
+    bool load_texture(
+        int index, LoadTask& task, std::mutex& lock,
+        vk::Device device, vma::Allocator allocator, vma::Allocation allocation,
+        vk::CommandBuffer commandBuffer,
+        uint8_t* decodeBuffer, size_t stagingSize, vk::Buffer stagingBuffer)
+    {
+        texture* tex = std::get<texture*>(task.dst);
+        if(std::holds_alternative<std::filesystem::path>(task.src))
+        {
+            const auto& path = std::get<std::filesystem::path>(task.src);
+
+            sdl::unique_surface surface = sdl::unique_surface{sdl::image::Load(path.c_str())};
+            if(!surface)
+            {
+                spdlog::error("[Resource Loader {}] Failed to load image {}", index, path.string());
+                std::scoped_lock<std::mutex> l(lock);
+                tex->create_image(1, 1); // create fake image to avoid crash
+                return false;
+            }
+
+            if(surface->format->format != sdl::PixelFormatEnum::SDL_PIXELFORMAT_RGBA32)
+            {
+                sdl::unique_surface newSurface = sdl::unique_surface{sdl::ConvertSurfaceFormat(surface.get(), SDL_PIXELFORMAT_RGBA32, 0)};
+                surface = std::move(newSurface);
+            }
+
+            std::size_t size = surface->w * surface->h * surface->format->BytesPerPixel;
+            if(size > stagingSize)
+            {
+                spdlog::warn("[Resource Loader {}] Image {} is too large ({} bytes), scaling it to {}x{}", index, path.string(), size,
+                    safe_size, safe_size);
+                sdl::unique_surface newSurface = sdl::unique_surface{sdl::CreateRGBSurface(0, safe_size, safe_size, 32, 0, 0, 0, 0)};
+                sdl::BlitScaled(surface.get(), nullptr, newSurface.get(), nullptr);
+                surface = std::move(newSurface);
+                size = surface->w * surface->h * surface->format->BytesPerPixel;
+                assert(size <= stagingSize);
+            }
+
+            {
+                std::scoped_lock<std::mutex> l(lock);
+                tex->create_image(surface->w, surface->h);
+            }
+
+            sdl::surface_lock lock{surface.get()};
+            allocator.copyMemoryToAllocation(lock.pixels(), allocation, 0, surface->w * surface->h * 4);
+        }
+        else
+        {
+            std::fill(decodeBuffer, decodeBuffer+stagingSize, 0x00);
+            std::get<LoaderFunction>(task.src)(decodeBuffer, stagingSize);
+            allocator.copyMemoryToAllocation(decodeBuffer, allocation, 0, stagingSize);
+        }
+
+        commandBuffer.begin(vk::CommandBufferBeginInfo());
+
+        commandBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eTransfer, {}, {}, {},
+            vk::ImageMemoryBarrier(
+                {}, vk::AccessFlagBits::eTransferWrite,
+                vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal,
+                vk::QueueFamilyIgnored, vk::QueueFamilyIgnored,
+                tex->image, vk::ImageSubresourceRange(vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1)));
+        std::array<vk::BufferImageCopy, 1> copies = {
+            vk::BufferImageCopy(0, 0, 0, vk::ImageSubresourceLayers(vk::ImageAspectFlagBits::eColor, 0, 0, 1),
+                {}, {static_cast<uint32_t>(tex->width), static_cast<uint32_t>(tex->height), 1})
+        };
+        commandBuffer.copyBufferToImage(stagingBuffer, tex->image, vk::ImageLayout::eTransferDstOptimal, copies);
+        commandBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eTransfer, {}, {}, {},
+            vk::ImageMemoryBarrier(
+                vk::AccessFlagBits::eTransferWrite, {},
+                vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eShaderReadOnlyOptimal,
+                vk::QueueFamilyIgnored, vk::QueueFamilyIgnored,
+                tex->image, vk::ImageSubresourceRange(vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1)));
+        commandBuffer.end();
+
+        if(std::holds_alternative<std::filesystem::path>(task.src))
+        {
+            const auto& path = std::get<std::filesystem::path>(task.src).string();
+            debugTag(device, tex->image, debug_tag::TextureSrc, path);
+            debugName(device, tex->image, "Texture \""+path+"\"");
+            debugName(device, tex->imageView.get(), "Texture \""+path+"\" View");
+        }
+        else
+        {
+            debugTag(device, tex->image, debug_tag::TextureSrc, "dynamic");
+            debugName(device, tex->image, "Dynamic Texture");
+            debugName(device, tex->imageView.get(), "Dynamic Texture View");
+        }
+        return true;
+    }
+
+    void load_obj(std::istream &in, std::vector<vertex_data> &vertices, std::vector<uint32_t> &indices)
+    {
+        std::vector<glm::vec3> positions;
+        std::vector<glm::vec3> normals;
+        std::vector<glm::vec2> texCoords;
+        std::vector<std::tuple<int, int, int>> cindices;
+
+        std::string line;
+        while(std::getline(in, line))
+        {
+            std::istringstream is(line);
+            std::string type;
+            is >> type;
+            if(type=="v") {
+                float x, y, z;
+                is >> x >> y >> z;
+                positions.push_back({x, y, z});
+            } else if(type=="vt") {
+                float u, v;
+                is >> u >> v;
+                texCoords.push_back({u, -v});
+            } else if(type=="vn") {
+                float x, y, z;
+                is >> x >> y >> z;
+                normals.push_back({x, y, z});
+            } else if(type=="f") {
+                std::array<std::string, 3> args;
+                is >> args[0] >> args[1] >> args[2];
+                for(int i=0; i<3; i++) {
+                    std::stringstream s(args[i]);
+                    int vertex, uv, normal;
+
+                    s >> vertex;
+                    s.ignore(1);
+                    s >> uv;
+                    s.ignore(1);
+                    s >> normal;
+
+                    cindices.push_back({vertex-1, uv-1, normal-1});
+                }
+            }
+        }
+
+        std::vector<std::tuple<int, int, int>> indexCombos;
+        for(int i=0; i<cindices.size(); i++) {
+            auto index = cindices[i];
+            auto p = std::find(indexCombos.begin(), indexCombos.end(), index);
+            if(p == indexCombos.end()) {
+                indices.push_back(vertices.size());
+                auto [pos, tex, nor] = index;
+                vertices.push_back({positions[pos], normals[nor], texCoords[tex]});
+                indexCombos.push_back(index);
+            } else {
+                indices.push_back(std::distance(indexCombos.begin(), p));
+            }
+        }
+    }
+
+    bool load_model(
+        int index, LoadTask& task,
+        vk::Device device, vma::Allocator allocator, vma::Allocation allocation,
+        vk::CommandBuffer commandBuffer,
+        size_t stagingSize, vk::Buffer stagingBuffer)
+    {
+        std::ifstream obj(std::get<std::filesystem::path>(task.src));
+        std::vector<vertex_data> vertices;
+        std::vector<uint32_t> indices;
+        load_obj(obj, vertices, indices);
+
+        model* mesh = std::get<model*>(task.dst);
+        mesh->create_buffers(vertices.size(), indices.size());
+        for(auto& v : vertices)
+        {
+            mesh->min = glm::min(mesh->min, v.position);
+            mesh->max = glm::max(mesh->max, v.position);
+        }
+
+        vk::DeviceSize vertexOffset = 0;
+        vk::DeviceSize vertexSize = vertices.size() * sizeof(vertex_data);
+        vk::DeviceSize indexOffset = vertexSize;
+        vk::DeviceSize indexSize = indices.size() * sizeof(uint32_t);
+
+        void* buf = allocator.mapMemory(allocation);
+        std::copy(vertices.begin(), vertices.end(), (vertex_data*)((uint8_t*)buf+vertexOffset));
+        std::copy(indices.begin(), indices.end(), (uint32_t*)((uint8_t*)buf+indexOffset));
+        allocator.unmapMemory(allocation);
+
+        commandBuffer.begin(vk::CommandBufferBeginInfo());
+        vk::BufferCopy region(0, 0, 0);
+        commandBuffer.copyBuffer(stagingBuffer, mesh->vertexBuffer, region.setSrcOffset(vertexOffset).setSize(vertexSize));
+        commandBuffer.copyBuffer(stagingBuffer, mesh->indexBuffer, region.setSrcOffset(indexOffset).setSize(indexSize));
+        commandBuffer.end();
+
+        const auto& path = std::get<std::filesystem::path>(task.src).string();
+        debugName(device, mesh->vertexBuffer, "Model \""+path+"\" Vertex Buffer");
+        debugName(device, mesh->indexBuffer, "Model \""+path+"\" Index Buffer");
+        return true;
+    }
+}
