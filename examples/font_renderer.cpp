@@ -30,7 +30,7 @@ class simple_phase : public dreamrender::phase {
 
             renderPass = device.createRenderPassUnique(vk::RenderPassCreateInfo({}, attachment, subpass, dependency));
 
-            fontRenderer.preload(loader, {renderPass.get()}, win->config.sampleCount);
+            add_task(fontRenderer.preload(loader, {renderPass.get()}, win->config.sampleCount));
         }
         void prepare(std::vector<vk::Image> swapchainImages, std::vector<vk::ImageView> swapchainViews) override {
             phase::prepare(swapchainImages, swapchainViews);

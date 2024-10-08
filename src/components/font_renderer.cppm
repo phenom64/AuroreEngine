@@ -84,7 +84,8 @@ export class font_renderer {
             }
         }
 
-        void preload(resource_loader* loader,
+        [[nodiscard("Use this with add_task")]]
+        std::shared_future<void> preload(resource_loader* loader,
             const std::vector<vk::RenderPass>& renderPasses, vk::SampleCountFlagBits sampleCount,
             vk::PipelineCache pipelineCache = {},
             FT_Library ft = nullptr,
@@ -209,7 +210,6 @@ export class font_renderer {
                     }
                 }
             );
-            textureReady.wait(); // TODO: This is blocking, should be async
 
             vk::SamplerCreateInfo sampler_info({}, vk::Filter::eLinear, vk::Filter::eLinear, vk::SamplerMipmapMode::eLinear,
                 vk::SamplerAddressMode::eRepeat, vk::SamplerAddressMode::eRepeat, vk::SamplerAddressMode::eRepeat,
@@ -272,6 +272,7 @@ export class font_renderer {
                     &input_assembly, &tesselation, &viewport, &rasterization, &multisample, &depthStencil, &colorBlend, &dynamic, pipelineLayout.get(), {});
                 pipelines = createPipelines(device, pipelineCache, pipeline_info, renderPasses, "Font Renderer Pipeline");
             }
+            return textureReady;
         }
         void prepare(int imageCount) {
             std::array<vk::DescriptorPoolSize, 2> sizes = {
@@ -330,6 +331,16 @@ export class font_renderer {
         void renderText(vk::CommandBuffer cmd, int frame, vk::RenderPass renderPass, std::string_view text,
             float x, float y, float scale = 1.0f, glm::vec4 color = glm::vec4(1.0, 1.0, 1.0, 1.0))
         {
+            if(vertexOffsets[frame] + text.size() > maxTexts*maxCharacters) {
+                throw std::runtime_error("Too many characters");
+            }
+            if(uniformOffsets[frame] >= maxTexts) {
+                throw std::runtime_error("Too many texts");
+            }
+            if(textureReady.wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
+                return;
+            }
+
             {
                 VertexCharacter* vc = vertexPointers[frame] + vertexOffsets[frame];
                 float x = 0;

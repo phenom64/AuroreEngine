@@ -6,6 +6,8 @@ module;
 #include <future>
 #include <mutex>
 #include <queue>
+#include <span>
+#include <string_view>
 #include <thread>
 #include <variant>
 
@@ -31,11 +33,15 @@ enum class LoadType
     Model
 };
 
-using LoaderFunction = std::move_only_function<void(uint8_t*, size_t)>;
+export using LoaderFunction = std::move_only_function<void(uint8_t*, size_t)>;
+export struct LoadDataView {
+    std::span<const uint8_t> data;
+    std::string_view type;
+};
 struct LoadTask
 {
     LoadType type;
-    std::variant<std::filesystem::path, LoaderFunction> src;
+    std::variant<std::filesystem::path, LoaderFunction, LoadDataView> src;
     std::variant<texture*, model*, vk::Image, vk::Buffer> dst;
     std::promise<void> promise;
 };
@@ -76,6 +82,7 @@ export class resource_loader
             }
         }
 
+        [[nodiscard("Use this with add_task")]]
         std::future<void> loadTexture(texture* texture, std::filesystem::path path) {
             std::future<void> f;
             {
@@ -86,6 +93,7 @@ export class resource_loader
             cv.notify_one();
             return f;
         }
+        [[nodiscard("Use this with add_task")]]
         std::future<void> loadTexture(texture* texture, LoaderFunction loader) {
             std::future<void> f;
             {
@@ -96,12 +104,35 @@ export class resource_loader
             cv.notify_one();
             return f;
         }
+        [[nodiscard("Use this with add_task")]]
+        std::future<void> loadTexture(texture* texture, LoadDataView data) {
+            std::future<void> f;
+            {
+                std::scoped_lock<std::mutex> l(lock);
+                tasks.push(LoadTask{.type = LoadType::Texture, .src = data, .dst = texture, .promise = std::promise<void>()});
+                f = tasks.back().promise.get_future();
+            }
+            cv.notify_one();
+            return f;
+        }
 
+        [[nodiscard("Use this with add_task")]]
         std::future<void> loadModel(model* model, std::filesystem::path filename) {
             std::future<void> f;
             {
                 std::scoped_lock<std::mutex> l(lock);
                 tasks.push(LoadTask{.type = LoadType::Model, .src = filename, .dst = model, .promise = std::promise<void>()});
+                f = tasks.back().promise.get_future();
+            }
+            cv.notify_one();
+            return f;
+        }
+        [[nodiscard("Use this with add_task")]]
+        std::future<void> loadModel(model* model, LoadDataView data) {
+            std::future<void> f;
+            {
+                std::scoped_lock<std::mutex> l(lock);
+                tasks.push(LoadTask{.type = LoadType::Model, .src = data, .dst = model, .promise = std::promise<void>()});
                 f = tasks.back().promise.get_future();
             }
             cv.notify_one();

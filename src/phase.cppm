@@ -37,6 +37,31 @@ export class phase
                 f.wait();
             }
         }
+        bool ready() const {
+            for(auto& f : loadingFutures)
+            {
+                if(f.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
+        std::pair<unsigned int, unsigned int> get_progress() const {
+            unsigned int total = loadingFutures.size();
+            unsigned int done = 0;
+            for(auto& f : loadingFutures)
+            {
+                if(f.wait_for(std::chrono::seconds(0)) == std::future_status::ready)
+                {
+                    done++;
+                }
+            }
+            return {done, total};
+        }
+        void add_task(std::shared_future<void> f) {
+            loadingFutures.push_back(f);
+        }
     protected:
         window* win;
 
