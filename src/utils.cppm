@@ -24,38 +24,8 @@ constexpr auto convert() requires (std::integral<FromType> && std::integral<ToTy
         std::remove_cv_t<FromType>, 
         std::remove_cv_t<typename decltype(src)::value_type>
         >, "Source type must match the type of the input array");
-    
-    constexpr unsigned int from_size = sizeof(FromType);
-    constexpr unsigned int to_size = sizeof(ToType);
-    if constexpr (from_size < to_size) {
-        static_assert(to_size % from_size == 0, "Cannot convert to a type that is not a multiple of the source type");
-        constexpr auto factor = to_size/from_size;
-        std::array<ToType, src.size()/factor> result;
-        for(unsigned int i=0; i<result.size(); ++i) {
-            ToType value = 0;
-            for(unsigned int j=0; j<factor; ++j) {
-                value |= static_cast<ToType>(src[i*to_size/from_size+j]) << (from_size*8*j);
-            }
-            result[i] = value;
-        }
-        return result;
-    } else if constexpr (from_size > to_size) {
-        static_assert(from_size % to_size == 0, "annot convert from a type that is not a multiple of the destination type");
-        constexpr auto factor = from_size/to_size;
-        std::array<ToType, src.size()*factor> result;
-        for(unsigned int i=0; i<src.size(); ++i) {
-            for(unsigned int j=0; j<factor; ++j) {
-                result[i*factor+j] = (src[i] >> (to_size*8*j)) & ((1 << (to_size*8))-1);
-            }
-        }
-        return result;
-    } else {
-        std::array<ToType, src.size()> result;
-        for(unsigned int i=0; i<src.size(); ++i) {
-            result[i] = static_cast<ToType>(src[i]);
-        }
-        return result;
-    }
+
+    return std::bit_cast<std::array<ToType, src.size()*sizeof(FromType)/sizeof(ToType)>>(src);
 }
 
 // Some constexpr tests
