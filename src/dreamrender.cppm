@@ -10,3 +10,4 @@ export import :texture;
 export import :window;
 
 export import :components.font_renderer;
+export import :components.image_renderer;

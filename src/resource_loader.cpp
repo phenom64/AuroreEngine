@@ -3,6 +3,7 @@ module;
 #include <algorithm>
 #include <cassert>
 #include <filesystem>
+#include <format>
 #include <mutex>
 #include <variant>
 #include <vector>
@@ -23,21 +24,44 @@ namespace dreamrender {
 
     constexpr unsigned int safe_size = 256;
 
+    std::string LoadTask::source_name() const {
+        if(std::holds_alternative<std::filesystem::path>(src))
+            return std::get<std::filesystem::path>(src).string();
+        else if(std::holds_alternative<LoaderFunction>(src))
+            return "dynamic data";
+        else if(std::holds_alternative<LoadDataView>(src))
+            return std::format("data at {}", static_cast<const void*>(std::get<LoadDataView>(src).data.data()));
+        else
+            return "unknown";
+    }
+
     bool load_texture(
         int index, LoadTask& task, std::mutex& lock,
         vk::Device device, vma::Allocator allocator, vma::Allocation allocation,
         vk::CommandBuffer commandBuffer,
         uint8_t* decodeBuffer, size_t stagingSize, vk::Buffer stagingBuffer)
     {
+        std::string name = task.source_name();
         texture* tex = std::get<texture*>(task.dst);
-        if(std::holds_alternative<std::filesystem::path>(task.src))
+        if(std::holds_alternative<std::filesystem::path>(task.src) ||
+            (std::holds_alternative<LoadDataView>(task.src) && std::get<LoadDataView>(task.src).type != "RAW"))
         {
-            const auto& path = std::get<std::filesystem::path>(task.src);
+            sdl::unique_surface surface;
 
-            sdl::unique_surface surface = sdl::unique_surface{sdl::image::Load(path.c_str())};
+            if(std::holds_alternative<std::filesystem::path>(task.src))
+            {
+                const auto& path = std::get<std::filesystem::path>(task.src);
+                surface = sdl::unique_surface{sdl::image::Load(path.c_str())};
+            }
+            else
+            {
+                const auto& data = std::get<LoadDataView>(task.src);
+                sdl::unique_rwops rwops = sdl::unique_rwops{sdl::RWFromConstMem(data.data.data(), data.data.size())};
+                surface = sdl::unique_surface{sdl::image::LoadTyped_RW(rwops.get(), 0, data.type.empty() ? nullptr : data.type.c_str())};
+            }
             if(!surface)
             {
-                spdlog::error("[Resource Loader {}] Failed to load image {}", index, path.string());
+                spdlog::error("[Resource Loader {}] Failed to load image {}", index, name);
                 std::scoped_lock<std::mutex> l(lock);
                 tex->create_image(1, 1); // create fake image to avoid crash
                 return false;
@@ -52,7 +76,7 @@ namespace dreamrender {
             std::size_t size = surface->w * surface->h * surface->format->BytesPerPixel;
             if(size > stagingSize)
             {
-                spdlog::warn("[Resource Loader {}] Image {} is too large ({} bytes), scaling it to {}x{}", index, path.string(), size,
+                spdlog::warn("[Resource Loader {}] Image {} is too large ({} bytes), scaling it to {}x{}", index, name, size,
                     safe_size, safe_size);
                 sdl::unique_surface newSurface = sdl::unique_surface{sdl::CreateRGBSurface(0, safe_size, safe_size, 32, 0, 0, 0, 0)};
                 sdl::BlitScaled(surface.get(), nullptr, newSurface.get(), nullptr);
@@ -71,6 +95,7 @@ namespace dreamrender {
         }
         else
         {
+            name = "dynamic data";
             std::fill(decodeBuffer, decodeBuffer+stagingSize, 0x00);
             std::get<LoaderFunction>(task.src)(decodeBuffer, stagingSize);
             allocator.copyMemoryToAllocation(decodeBuffer, allocation, 0, stagingSize);
@@ -98,19 +123,8 @@ namespace dreamrender {
                 tex->image, vk::ImageSubresourceRange(vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1)));
         commandBuffer.end();
 
-        if(std::holds_alternative<std::filesystem::path>(task.src))
-        {
-            const auto& path = std::get<std::filesystem::path>(task.src).string();
-            debugTag(device, tex->image, debug_tag::TextureSrc, path);
-            debugName(device, tex->image, "Texture \""+path+"\"");
-            debugName(device, tex->imageView.get(), "Texture \""+path+"\" View");
-        }
-        else
-        {
-            debugTag(device, tex->image, debug_tag::TextureSrc, "dynamic");
-            debugName(device, tex->image, "Dynamic Texture");
-            debugName(device, tex->imageView.get(), "Dynamic Texture View");
-        }
+        debugName(device, tex->image, "Texture \""+name+"\"");
+        debugName(device, tex->imageView.get(), "Texture \""+name+"\" View");
         return true;
     }
 
@@ -207,9 +221,9 @@ namespace dreamrender {
         commandBuffer.copyBuffer(stagingBuffer, mesh->indexBuffer, region.setSrcOffset(indexOffset).setSize(indexSize));
         commandBuffer.end();
 
-        const auto& path = std::get<std::filesystem::path>(task.src).string();
-        debugName(device, mesh->vertexBuffer, "Model \""+path+"\" Vertex Buffer");
-        debugName(device, mesh->indexBuffer, "Model \""+path+"\" Index Buffer");
+        std::string name = task.source_name();
+        debugName(device, mesh->vertexBuffer, "Model \""+name+"\" Vertex Buffer");
+        debugName(device, mesh->indexBuffer, "Model \""+name+"\" Index Buffer");
         return true;
     }
 }

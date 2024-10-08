@@ -36,7 +36,9 @@ enum class LoadType
 export using LoaderFunction = std::move_only_function<void(uint8_t*, size_t)>;
 export struct LoadDataView {
     std::span<const uint8_t> data;
-    std::string_view type;
+    std::string type;
+
+    LoadDataView(std::span<const uint8_t> data, std::string_view type = "") : data(data), type(type) {}
 };
 struct LoadTask
 {
@@ -44,6 +46,8 @@ struct LoadTask
     std::variant<std::filesystem::path, LoaderFunction, LoadDataView> src;
     std::variant<texture*, model*, vk::Image, vk::Buffer> dst;
     std::promise<void> promise;
+
+    std::string source_name() const;
 };
 
 bool load_model(
@@ -226,7 +230,7 @@ export class resource_loader
                     auto t1 = std::chrono::high_resolution_clock::now();
                     auto time = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
                     spdlog::debug("[Resource Loader {}] Loaded {} into {} in {} ms", index,
-                        std::holds_alternative<std::filesystem::path>(task.src) ? std::get<std::filesystem::path>(task.src).string() : "dynamic resource",
+                        task.source_name(),
                         std::holds_alternative<texture*>(task.dst) ? static_cast<void*>(std::get<texture*>(task.dst)->image) :
                             (std::holds_alternative<model*>(task.dst) ? std::get<model*>(task.dst)->vertexBuffer : nullptr),
                         time);

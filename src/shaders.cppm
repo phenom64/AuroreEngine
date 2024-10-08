@@ -12,4 +12,9 @@ namespace font_renderer {
     vk::UniqueShaderModule frag(vk::Device device);
 }
 
+namespace image_renderer {
+    vk::UniqueShaderModule vert(vk::Device device);
+    vk::UniqueShaderModule frag(vk::Device device);
+}
+
 }

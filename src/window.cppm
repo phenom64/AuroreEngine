@@ -202,7 +202,7 @@ export class window
                 imagesInFlight[imageIndex] = inFlightFences[currentFrame];
 
                 device->resetFences(fences[currentFrame].get());
-                
+
                 if(!current_renderer)
                     throw std::runtime_error("No renderer set!");
                 current_renderer->render(imageIndex, imageAvailableSemaphores[currentFrame].get(), renderFinishedSemaphores[currentFrame].get(), inFlightFences[currentFrame]);

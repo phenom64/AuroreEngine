@@ -12,7 +12,7 @@ import vma;
 
 namespace dreamrender {
 
-struct texture
+export struct texture
 {
     texture(vk::Device device, vma::Allocator allocator, int width, int height,
         vk::ImageUsageFlags usage = vk::ImageUsageFlagBits::eSampled,
@@ -31,9 +31,9 @@ struct texture
 
         view_info = vk::ImageViewCreateInfo({}, image, vk::ImageViewType::e2D, format,
         vk::ComponentMapping(), vk::ImageSubresourceRange(aspects, 0, 1, 0, 1));
-        imageView = device.createImageViewUnique(view_info);            
+        imageView = device.createImageViewUnique(view_info);
     }
-    
+
     texture(vk::Device device, vma::Allocator allocator, vk::Extent2D extent,
         vk::ImageUsageFlags usage = vk::ImageUsageFlagBits::eSampled,
         vk::Format format = vk::Format::eR8G8B8A8Srgb,
@@ -93,6 +93,9 @@ struct texture
     void name(std::string name) {
         debugName(device, image, name+" Image");
         debugName(device, imageView.get(), name+" Image View");
+    }
+    double aspectRatio() {
+        return static_cast<double>(width)/height;
     }
 
     vk::Device device;

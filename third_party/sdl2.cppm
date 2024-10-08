@@ -53,6 +53,7 @@ export namespace sdl {
     ALIAS_FUNCTION(ConvertSurfaceFormat, SDL_ConvertSurfaceFormat);
     ALIAS_FUNCTION(CreateRGBSurface, SDL_CreateRGBSurface);
     ALIAS_FUNCTION(BlitScaled, SDL_BlitScaled);
+    ALIAS_FUNCTION(RWFromConstMem, SDL_RWFromConstMem);
 
     using Window = SDL_Window;
     using Rect = SDL_Rect;
@@ -66,12 +67,14 @@ export namespace sdl {
     using JoystickID = SDL_JoystickID;
     using PixelFormatEnum = SDL_PixelFormatEnum;
     using Surface = SDL_Surface;
+    using RWops = SDL_RWops;
 
     constexpr auto enable = SDL_ENABLE;
     constexpr auto disable = SDL_DISABLE;
 
     namespace image {
         ALIAS_FUNCTION(Load, IMG_Load);
+        ALIAS_FUNCTION(LoadTyped_RW, IMG_LoadTyped_RW);
     }
 
     namespace mix {
@@ -130,4 +133,10 @@ export namespace sdl {
         }
     };
 
+    struct rwops_deleter {
+        void operator()(SDL_RWops* ptr) const {
+            SDL_RWclose(ptr);
+        }
+    };
+    using unique_rwops = std::unique_ptr<SDL_RWops, rwops_deleter>;
 }
