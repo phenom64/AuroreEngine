@@ -74,6 +74,7 @@ namespace dreamrender {
             std::fill(decodeBuffer, decodeBuffer+stagingSize, 0x00);
             std::get<LoaderFunction>(task.src)(decodeBuffer, stagingSize);
             allocator.copyMemoryToAllocation(decodeBuffer, allocation, 0, stagingSize);
+            allocator.flushAllocation(allocation, 0, stagingSize);
         }
 
         commandBuffer.begin(vk::CommandBufferBeginInfo());

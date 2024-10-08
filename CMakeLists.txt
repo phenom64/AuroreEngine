@@ -14,6 +14,7 @@ find_package(spdlog REQUIRED)
 find_package(SDL2 REQUIRED)
 find_package(SDL2_image REQUIRED)
 find_package(SDL2_mixer REQUIRED)
+find_package(Freetype REQUIRED)
 
 FetchContent_Declare(
   VulkanMemoryAllocator-Hpp
@@ -25,5 +26,6 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(VulkanMemoryAllocator-Hpp)
 
 add_subdirectory(third_party)
+add_subdirectory(shaders)
 add_subdirectory(src)
 add_subdirectory(examples)

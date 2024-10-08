@@ -5,6 +5,7 @@ set(SOURCES
 )
 set(MODULE_SOURCES
   dreamrender.cppm
+  
   debug.cppm
   input.cppm
   model.cppm
@@ -13,6 +14,8 @@ set(MODULE_SOURCES
   texture.cppm
   utils.cppm
   window.cppm
+
+  components/font_renderer.cppm
 )
 
 add_library(dreamrender ${SOURCES})
@@ -28,5 +31,10 @@ target_link_libraries(dreamrender PUBLIC
   VulkanHppModule
   vmaModule
 )
+target_link_libraries(dreamrender PUBLIC Freetype::Freetype)
+
+add_dependencies(dreamrender shaders)
+target_compile_options(dreamrender PRIVATE --embed-dir=${CMAKE_CURRENT_BINARY_DIR}/../shaders)
+target_include_directories(dreamrender PUBLIC ${CMAKE_CURRENT_BINARY_DIR}/../shaders)
 
 add_library(dreams::dreamrender ALIAS dreamrender)

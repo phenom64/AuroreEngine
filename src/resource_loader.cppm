@@ -31,7 +31,7 @@ enum class LoadType
     Model
 };
 
-using LoaderFunction = std::function<void(uint8_t*, size_t)>;
+using LoaderFunction = std::move_only_function<void(uint8_t*, size_t)>;
 struct LoadTask
 {
     LoadType type;
@@ -90,7 +90,7 @@ export class resource_loader
             std::future<void> f;
             {
                 std::scoped_lock<std::mutex> l(lock);
-                tasks.push(LoadTask{.type = LoadType::Texture, .src = loader, .dst = texture, .promise = std::promise<void>()});
+                tasks.push(LoadTask{.type = LoadType::Texture, .src = std::move(loader), .dst = texture, .promise = std::promise<void>()});
                 f = tasks.back().promise.get_future();
             }
             cv.notify_one();
