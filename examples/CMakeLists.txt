@@ -2,6 +2,7 @@ set(EXAMPLES
   simple
   font_renderer
   image_renderer
+  gui_renderer
 )
 
 foreach(EXAMPLE ${EXAMPLES})

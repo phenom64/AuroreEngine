@@ -1,4 +1,4 @@
-set(SOURCES 
+set(SOURCES
   implementations.cpp
   phase.cpp
   resource_loader.cpp
@@ -6,8 +6,9 @@ set(SOURCES
 )
 set(MODULE_SOURCES
   dreamrender.cppm
-  
+
   debug.cppm
+  gui_renderer.cppm
   input.cppm
   model.cppm
   phase.cppm

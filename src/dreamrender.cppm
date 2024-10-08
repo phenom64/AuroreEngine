@@ -2,6 +2,7 @@ module;
 
 export module dreamrender;
 
+export import :gui_renderer;
 export import :input;
 export import :model;
 export import :phase;
