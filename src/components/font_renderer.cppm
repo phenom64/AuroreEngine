@@ -13,13 +13,10 @@ module;
 #include <freetype2/ft2build.h>
 #include <freetype/freetype.h>
 
-#include "font_renderer.vert.h"
-#include "font_renderer.geom.h"
-#include "font_renderer.frag.h"
-
 export module dreamrender:components.font_renderer;
 
 import :resource_loader;
+import :shaders;
 import :texture;
 import :utils;
 
@@ -234,9 +231,9 @@ export class font_renderer {
                 debugName(device, pipelineLayout.get(), "Font Renderer Pipeline Layout");
             }
             {
-                vk::UniqueShaderModule vertexShader = createShader(device, font_renderer_vert);
-                vk::UniqueShaderModule geometryShader = createShader(device, font_renderer_geom);
-                vk::UniqueShaderModule fragmentShader = createShader(device, font_renderer_frag);
+                vk::UniqueShaderModule vertexShader = shaders::font_renderer::vert(device);
+                vk::UniqueShaderModule geometryShader = shaders::font_renderer::geom(device);
+                vk::UniqueShaderModule fragmentShader = shaders::font_renderer::frag(device);
                 std::array<vk::PipelineShaderStageCreateInfo, 3> shaders = {
                     vk::PipelineShaderStageCreateInfo({}, vk::ShaderStageFlagBits::eVertex, vertexShader.get(), "main"),
                     vk::PipelineShaderStageCreateInfo({}, vk::ShaderStageFlagBits::eGeometry, geometryShader.get(), "main"),

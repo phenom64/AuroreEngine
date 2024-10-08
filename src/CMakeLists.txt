@@ -2,6 +2,7 @@ set(SOURCES
   implementations.cpp
   phase.cpp
   resource_loader.cpp
+  shaders.cpp
 )
 set(MODULE_SOURCES
   dreamrender.cppm
@@ -11,6 +12,7 @@ set(MODULE_SOURCES
   model.cppm
   phase.cppm
   resource_loader.cppm
+  shaders.cppm
   texture.cppm
   utils.cppm
   window.cppm
