@@ -1,8 +1,7 @@
 #include <vector>
-#include <vulkan/vulkan.hpp>
-#include <vulkan/vulkan_handles.hpp>
 
 import dreamrender;
+import spdlog;
 import vulkan_hpp;
 
 class simple_phase : public dreamrender::phase {
@@ -15,7 +14,7 @@ class simple_phase : public dreamrender::phase {
         void preload() override {
             phase::preload();
 
-            vk::AttachmentDescription attachment{{}, win->swapchainFormat.format, win->config.sampleCount, 
+            vk::AttachmentDescription attachment{{}, win->swapchainFormat.format, win->config.sampleCount,
                 vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eStore,
                 vk::AttachmentLoadOp::eDontCare, vk::AttachmentStoreOp::eDontCare,
                 vk::ImageLayout::eUndefined, vk::ImageLayout::ePresentSrcKHR};
@@ -27,7 +26,7 @@ class simple_phase : public dreamrender::phase {
         }
         void prepare(std::vector<vk::Image> swapchainImages, std::vector<vk::ImageView> swapchainViews) override {
             phase::prepare(swapchainImages, swapchainViews);
-            
+
             framebuffers = createFramebuffers(renderPass.get());
         }
         void init() override {
@@ -35,7 +34,7 @@ class simple_phase : public dreamrender::phase {
         }
         void render(int frame, vk::Semaphore imageAvailable, vk::Semaphore renderFinished, vk::Fence fence) override {
             phase::render(frame, imageAvailable, renderFinished, fence);
-            
+
             vk::CommandBuffer& commandBuffer = commandBuffers[frame];
             commandBuffer.begin(vk::CommandBufferBeginInfo());
             vk::ClearValue clearValue(vk::ClearColorValue(std::array<float, 4>{0.0f, 0.0f, 0.0f, 1.0f}));
@@ -51,6 +50,8 @@ class simple_phase : public dreamrender::phase {
 };
 
 int main() {
+    spdlog::set_level(spdlog::level::debug);
+
     dreamrender::window_config config;
     config.title = "Simple Example";
     config.name = "simple-example";
