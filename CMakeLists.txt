@@ -7,6 +7,14 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_SCAN_FOR_MODULES ON)
 add_compile_options(-Wno-nullability-completeness)
 
+option(DREAMS_BUILD_EXAMPLES "Build examples" ON)
+option(DREAMS_BUILD_WITH_POSIX_THREADS "Build with POSIX threads" OFF)
+option(DREAMS_ALIAS_MODULES "CMake: Alias C++ module libraries" ON)
+
+if(DREAMS_BUILD_WITH_POSIX_THREADS)
+  add_compile_options(-pthread)
+endif()
+
 include(FetchContent)
 
 find_package(Vulkan REQUIRED)
@@ -28,4 +36,7 @@ FetchContent_MakeAvailable(VulkanMemoryAllocator-Hpp)
 add_subdirectory(third_party)
 add_subdirectory(shaders)
 add_subdirectory(src)
-add_subdirectory(examples)
+
+if(DREAMS_BUILD_EXAMPLES)
+  add_subdirectory(examples)
+endif()

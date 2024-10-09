@@ -29,16 +29,15 @@ target_sources(dreamrender PUBLIC
   FILES ${MODULE_SOURCES}
 )
 target_link_libraries(dreamrender PUBLIC
-  glmModule
-  sdl2Module
-  spdlogModule
-  VulkanHppModule
-  vmaModule
+  ${PROJECT_NAME}_glmModule
+  ${PROJECT_NAME}_sdl2Module
+  ${PROJECT_NAME}_spdlogModule
+  ${PROJECT_NAME}_VulkanHppModule
+  ${PROJECT_NAME}_vmaModule
 )
 target_link_libraries(dreamrender PUBLIC Freetype::Freetype)
 
-add_dependencies(dreamrender shaders)
-target_compile_options(dreamrender PRIVATE --embed-dir=${CMAKE_CURRENT_BINARY_DIR}/../shaders)
-target_include_directories(dreamrender PUBLIC ${CMAKE_CURRENT_BINARY_DIR}/../shaders)
+add_dependencies(dreamrender ${PROJECT_NAME}_shaders)
+target_compile_options(dreamrender PRIVATE --embed-dir=${CMAKE_CURRENT_BINARY_DIR}/../)
 
 add_library(dreams::dreamrender ALIAS dreamrender)
