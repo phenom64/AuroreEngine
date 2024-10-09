@@ -9,6 +9,7 @@ module;
 #include <memory>
 #include <optional>
 #include <set>
+#include <thread>
 #include <vector>
 
 #include <vulkan/vulkan_core.h>
@@ -79,11 +80,18 @@ struct SwapChainSupportDetails {
 
 export struct window_config {
     std::string title;
+    unsigned int display_index = 0;
+    unsigned int x = -1;
+    unsigned int y = -1;
+    unsigned int width = -1;
+    unsigned int height = -1;
+    bool fullscreen = true;
 
     std::string name;
     int version = 1;
 
     vk::PresentModeKHR preferredPresentMode = vk::PresentModeKHR::eFifoRelaxed;
+    int fpsLimit = -1;
     vk::SampleCountFlagBits sampleCount = vk::SampleCountFlagBits::e1;
 };
 
@@ -188,6 +196,18 @@ export class window
                 auto now = std::chrono::high_resolution_clock::now();
                 auto dt = std::chrono::duration<double>(now - lastFrame).count();
                 lastFrame = now;
+
+                using vk::PresentModeKHR::eFifo;
+                using vk::PresentModeKHR::eFifoRelaxed;
+                if(config.fpsLimit > 0 && (config.fpsLimit < refreshRate ||
+                    ~(swapchainPresentMode == eFifo || swapchainPresentMode == eFifoRelaxed)))
+                {
+                    auto frame_time = std::chrono::duration<double>(std::chrono::seconds(1)) / config.fpsLimit;
+                    auto sleep = frame_time - std::chrono::duration<double>(now - lastFrame);
+                    if(sleep > frame_time / 10) {
+                        std::this_thread::sleep_for(sleep);
+                    }
+                }
 
                 r = device->waitForFences(inFlightFences[currentFrame], true, UINT64_MAX);
                 if(r != vk::Result::eSuccess)
@@ -334,17 +354,19 @@ export class window
 #endif
     private:
         void initWindow() {
-            constexpr unsigned int display_index = 0;
-
             sdl::Rect rect;
-            sdl::GetDisplayBounds(display_index, &rect);
+            sdl::GetDisplayBounds(config.display_index, &rect);
 
+            if(config.x == -1) config.x = rect.x; else rect.x = config.x;
+            if(config.y == -1) config.y = rect.y; else rect.y = config.y;
+            if(config.width == -1) config.width = rect.w; else rect.w = config.width;
+            if(config.height == -1) config.height = rect.h; else rect.h = config.height;
             win = sdl::unique_window(
-                sdl::CreateWindow("Test", rect.x, rect.y, rect.w, rect.h,
-                    SDL_WINDOW_SHOWN | SDL_WINDOW_FULLSCREEN_DESKTOP | SDL_WINDOW_VULKAN)
+                sdl::CreateWindow(config.title.c_str(), rect.x, rect.y, rect.w, rect.h,
+                    SDL_WINDOW_SHOWN | (config.fullscreen ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0) | SDL_WINDOW_VULKAN)
             );
             spdlog::info("Created window ({}x{} @ {}:{}) on monitor \"{}\"", rect.w, rect.h, rect.x, rect.y,
-                sdl::GetDisplayName(display_index));
+                sdl::GetDisplayName(config.display_index));
 
             sdl::DisplayMode mode;
             sdl::GetWindowDisplayMode(win.get(), &mode);
