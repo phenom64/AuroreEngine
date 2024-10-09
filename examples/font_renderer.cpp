@@ -49,10 +49,10 @@ class simple_phase : public dreamrender::phase {
             vk::RenderPassBeginInfo renderPassInfo(renderPass.get(), framebuffers[frame].get(), vk::Rect2D({0, 0}, win->swapchainExtent), clearValue);
             commandBuffer.beginRenderPass(renderPassInfo, vk::SubpassContents::eInline);
 
-			vk::Viewport viewport(0.0f, 0.0f, win->swapchainExtent.width, win->swapchainExtent.height, 0.0f, 1.0f);
-			vk::Rect2D scissor({0,0}, win->swapchainExtent);
-			commandBuffer.setViewport(0, viewport);
-			commandBuffer.setScissor(0, scissor);
+            vk::Viewport viewport(0.0f, 0.0f, win->swapchainExtent.width, win->swapchainExtent.height, 0.0f, 1.0f);
+            vk::Rect2D scissor({0,0}, win->swapchainExtent);
+            commandBuffer.setViewport(0, viewport);
+            commandBuffer.setScissor(0, scissor);
 
             fontRenderer.renderText(commandBuffer, frame, renderPass.get(), "Hello World!", 0.0f, 0.0f, 0.1f);
 

@@ -21,7 +21,7 @@ namespace dreamrender {
 export template<std::array src, typename ToType, typename FromType = typename decltype(src)::value_type>
 constexpr auto convert() requires (std::integral<FromType> && std::integral<ToType>) {
     static_assert(std::is_same_v<
-        std::remove_cv_t<FromType>, 
+        std::remove_cv_t<FromType>,
         std::remove_cv_t<typename decltype(src)::value_type>
         >, "Source type must match the type of the input array");
 

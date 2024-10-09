@@ -30,7 +30,7 @@ struct vertex_data
 
 export struct model
 {
-    model(vk::Device device, vma::Allocator allocator) 
+    model(vk::Device device, vma::Allocator allocator)
         : device(device), allocator(allocator) {}
     ~model() {
         allocator.destroyBuffer(vertexBuffer, vertexAllocation);
@@ -54,9 +54,9 @@ export struct model
         this->vertexCount = vertexCount;
         this->indexCount = indexCount;
 
-        vk::BufferCreateInfo vertex_info({}, sizeof(vertex_data)*vertexCount, 
+        vk::BufferCreateInfo vertex_info({}, sizeof(vertex_data)*vertexCount,
             vk::BufferUsageFlagBits::eVertexBuffer | vk::BufferUsageFlagBits::eTransferDst, vk::SharingMode::eExclusive);
-        vk::BufferCreateInfo index_info({}, sizeof(uint32_t)*indexCount, 
+        vk::BufferCreateInfo index_info({}, sizeof(uint32_t)*indexCount,
             vk::BufferUsageFlagBits::eIndexBuffer | vk::BufferUsageFlagBits::eTransferDst, vk::SharingMode::eExclusive);
         vma::AllocationCreateInfo alloc_info({}, vma::MemoryUsage::eGpuOnly);
 

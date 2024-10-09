@@ -395,7 +395,7 @@ export class font_renderer {
         vma::Allocator allocator;
         std::string fontName;
         int fontSize;
-        
+
         std::map<char32_t, vk::Rect2D> glyphRects;
         size_t maxCharacters;
         size_t maxTexts;

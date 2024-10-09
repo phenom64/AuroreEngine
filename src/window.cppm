@@ -215,26 +215,26 @@ export class window
                 currentFrame = (currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
 
                 framesInSecond++;
-				auto t = std::chrono::high_resolution_clock::now();
-				using namespace std::chrono_literals;
-				if((t-lastFPS) > (1000ms/fpsSampleRate))
-				{
-					currentFPS = framesInSecond / std::chrono::duration<double>(t-lastFPS).count();
-					lastFPS = t;
-					framesInSecond = 0;
+                auto t = std::chrono::high_resolution_clock::now();
+                using namespace std::chrono_literals;
+                if((t-lastFPS) > (1000ms/fpsSampleRate))
+                {
+                    currentFPS = framesInSecond / std::chrono::duration<double>(t-lastFPS).count();
+                    lastFPS = t;
+                    framesInSecond = 0;
 
-					if(fpsCount%fpsSampleRate == 0)
-					{
-						spdlog::debug("{} FPS", currentFPS);
-						fpsCount = 0;
-					}
-					fpsCount++;
-				}
+                    if(fpsCount%fpsSampleRate == 0)
+                    {
+                        spdlog::debug("{} FPS", currentFPS);
+                        fpsCount = 0;
+                    }
+                    fpsCount++;
+                }
             }
         }
 
         void set_phase(phase* renderer, input::keyboard_handler* keyboard_handler = nullptr, input::controller_handler* controller_handler = nullptr) {
-		    current_renderer.reset(renderer);
+            current_renderer.reset(renderer);
 
             this->keyboard_handler = keyboard_handler;
             this->controller_handler = controller_handler;
@@ -260,8 +260,8 @@ export class window
             auto dInit = std::chrono::duration_cast<std::chrono::milliseconds>(tInit - tWaitLoad).count();
             auto dTotal = std::chrono::duration_cast<std::chrono::milliseconds>(tInit - t0).count();
 
-		    auto name = type_name(*renderer);
-		    spdlog::debug("Timing for phase \"{}\": preload/prepare/load/init/total: {}/{}/{}/{}/{} ms", name, dPreload, dPrepare, dWaitLoad, dInit, dTotal);
+            auto name = type_name(*renderer);
+            spdlog::debug("Timing for phase \"{}\": preload/prepare/load/init/total: {}/{}/{}/{}/{} ms", name, dPreload, dPrepare, dWaitLoad, dInit, dTotal);
         }
 
         window_config config;

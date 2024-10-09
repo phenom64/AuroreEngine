@@ -66,9 +66,9 @@ class simple_phase : public dreamrender::phase {
             commandBuffer.beginRenderPass(renderPassInfo, vk::SubpassContents::eInline);
 
             vk::Viewport viewport(0.0f, 0.0f, win->swapchainExtent.width, win->swapchainExtent.height, 0.0f, 1.0f);
-			vk::Rect2D scissor({0,0}, win->swapchainExtent);
-			commandBuffer.setViewport(0, viewport);
-			commandBuffer.setScissor(0, scissor);
+            vk::Rect2D scissor({0,0}, win->swapchainExtent);
+            commandBuffer.setViewport(0, viewport);
+            commandBuffer.setScissor(0, scissor);
 
             dreamrender::gui_renderer gui(commandBuffer, frame, renderPass.get(), win->swapchainExtent, &fontRenderer, &imageRenderer);
             gui.draw_text("Hello World!", 0.0f, 0.0f, 0.1f);

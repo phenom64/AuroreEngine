@@ -11,9 +11,9 @@ import vulkan_hpp;
 
 namespace dreamrender {
 
-phase::phase(window* window) : 
+phase::phase(window* window) :
     win(window),
-    instance(window->instance.get()), device(window->device.get()), 
+    instance(window->instance.get()), device(window->device.get()),
     allocator(window->allocator), loader(window->loader.get()),
     graphicsQueue(window->graphicsQueue), graphicsFamily(window->queueFamilyIndices.graphicsFamily.value())
 {
