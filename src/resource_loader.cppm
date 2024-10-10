@@ -86,7 +86,6 @@ export class resource_loader
             }
         }
 
-        [[nodiscard("Use this with add_task")]]
         std::future<void> loadTexture(texture* texture, std::filesystem::path path) {
             std::future<void> f;
             {
@@ -97,7 +96,6 @@ export class resource_loader
             cv.notify_one();
             return f;
         }
-        [[nodiscard("Use this with add_task")]]
         std::future<void> loadTexture(texture* texture, LoaderFunction loader) {
             std::future<void> f;
             {
@@ -108,7 +106,6 @@ export class resource_loader
             cv.notify_one();
             return f;
         }
-        [[nodiscard("Use this with add_task")]]
         std::future<void> loadTexture(texture* texture, LoadDataView data) {
             std::future<void> f;
             {
@@ -120,7 +117,6 @@ export class resource_loader
             return f;
         }
 
-        [[nodiscard("Use this with add_task")]]
         std::future<void> loadModel(model* model, std::filesystem::path filename) {
             std::future<void> f;
             {
@@ -131,7 +127,6 @@ export class resource_loader
             cv.notify_one();
             return f;
         }
-        [[nodiscard("Use this with add_task")]]
         std::future<void> loadModel(model* model, LoadDataView data) {
             std::future<void> f;
             {

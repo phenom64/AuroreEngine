@@ -84,7 +84,6 @@ export class font_renderer {
             }
         }
 
-        [[nodiscard("Use this with add_task")]]
         std::shared_future<void> preload(resource_loader* loader,
             const std::vector<vk::RenderPass>& renderPasses, vk::SampleCountFlagBits sampleCount,
             vk::PipelineCache pipelineCache = {},
