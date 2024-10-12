@@ -10,6 +10,7 @@ add_compile_options(-Wno-nullability-completeness)
 option(DREAMS_BUILD_EXAMPLES "Build examples" ON)
 option(DREAMS_BUILD_WITH_POSIX_THREADS "Build with POSIX threads" OFF)
 option(DREAMS_ALIAS_MODULES "CMake: Alias C++ module libraries" ON)
+option(DREAMS_FIND_PACKAGES "CMake: Find packages (if you disable this, you need to provide them)" ON)
 
 if(DREAMS_BUILD_WITH_POSIX_THREADS)
   add_compile_options(-pthread)
@@ -17,12 +18,23 @@ endif()
 
 include(FetchContent)
 
-find_package(Vulkan REQUIRED)
-find_package(spdlog REQUIRED)
-find_package(SDL2 REQUIRED)
-find_package(SDL2_image REQUIRED)
-find_package(SDL2_mixer REQUIRED)
-find_package(Freetype REQUIRED)
+# The following targets are required (one way or another):
+# - Vulkan::Headers
+# - spdlog::spdlog
+# - SDL2::SDL2
+# - SDL2_image::SDL2_image
+# - SDL2_mixer::SDL2_mixer
+# - Freetype::Freetype
+# - glm::glm
+if(DREAMS_FIND_PACKAGES)
+  find_package(Vulkan REQUIRED)
+  find_package(spdlog REQUIRED)
+  find_package(SDL2 REQUIRED)
+  find_package(SDL2_image REQUIRED)
+  find_package(SDL2_mixer REQUIRED)
+  find_package(Freetype REQUIRED)
+  find_package(glm REQUIRED)
+endif()
 
 FetchContent_Declare(
   VulkanMemoryAllocator-Hpp
