@@ -3,6 +3,8 @@ module;
 #include <spdlog/spdlog.h>
 #include <spdlog/cfg/env.h>
 #include <spdlog/cfg/argv.h>
+#include <spdlog/fmt/fmt.h>
+#include <spdlog/fmt/ranges.h>
 
 export module spdlog;
 
@@ -31,6 +33,5 @@ export namespace spdlog {
 };
 
 export namespace fmt {
-    using fmt::underlying;
     using fmt::join;
 }
