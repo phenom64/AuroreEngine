@@ -3,7 +3,6 @@ module;
 #include <algorithm>
 #include <cassert>
 #include <filesystem>
-#include <format>
 #include <mutex>
 #include <variant>
 #include <vector>
@@ -30,7 +29,7 @@ namespace dreamrender {
         else if(std::holds_alternative<LoaderFunction>(src))
             return "dynamic data";
         else if(std::holds_alternative<LoadDataView>(src))
-            return std::format("data at {}", static_cast<const void*>(std::get<LoadDataView>(src).data.data()));
+            return "data at {}"+std::to_string(reinterpret_cast<uintptr_t>(std::get<LoadDataView>(src).data.data()));
         else
             return "unknown";
     }
