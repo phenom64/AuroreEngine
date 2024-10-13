@@ -3,8 +3,7 @@ module;
 #include <spdlog/spdlog.h>
 #include <spdlog/cfg/env.h>
 #include <spdlog/cfg/argv.h>
-#include <spdlog/fmt/fmt.h>
-#include <spdlog/fmt/ranges.h>
+#include <fmt/ranges.h>
 
 export module spdlog;
 
