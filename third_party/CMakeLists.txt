@@ -31,3 +31,13 @@ if(DREAMS_ALIAS_MODULES)
   add_library(dreams::glmModule ALIAS ${PROJECT_NAME}_glmModule)
   add_library(dreams::vmaModule ALIAS ${PROJECT_NAME}_vmaModule)
 endif()
+
+get_target_property(sdl_include_dirs SDL2::SDL2 INTERFACE_INCLUDE_DIRECTORIES)
+list(GET sdl_include_dirs 0 sdl_include_dir)
+add_custom_command(
+  OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/codegen/generated/sdl2_hints.inc
+  COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/codegen-sdl2_hints.sh
+    ${sdl_include_dir}/SDL_hints.h ${CMAKE_CURRENT_BINARY_DIR}/codegen/generated/sdl2_hints.inc
+)
+target_sources(${PROJECT_NAME}_sdl2Module PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/codegen/generated/sdl2_hints.inc)
+target_include_directories(${PROJECT_NAME}_sdl2Module PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/codegen)

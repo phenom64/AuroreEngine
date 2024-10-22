@@ -29,6 +29,7 @@ export namespace sdl {
     ALIAS_FUNCTION(Init, SDL_Init);
     ALIAS_FUNCTION(InitSubSystem, SDL_InitSubSystem);
     ALIAS_FUNCTION(QuitSubSystem, SDL_QuitSubSystem);
+    ALIAS_FUNCTION(SetHint, SDL_SetHint);
     ALIAS_FUNCTION(CreateWindow, SDL_CreateWindow);
     ALIAS_FUNCTION(GetDisplayName, SDL_GetDisplayName);
     ALIAS_FUNCTION(GetWindowDisplayMode, SDL_GetWindowDisplayMode);
@@ -276,5 +277,9 @@ export namespace sdl {
             }
         };
         using unique_music = std::unique_ptr<Mix_Music, mix_music_deleter>;
+    }
+
+    namespace hints {
+#include "generated/sdl2_hints.inc"
     }
 }

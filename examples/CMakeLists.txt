@@ -3,6 +3,7 @@ set(EXAMPLES
   font_renderer
   image_renderer
   gui_renderer
+  transparency
 )
 
 foreach(EXAMPLE ${EXAMPLES})
@@ -11,3 +12,5 @@ foreach(EXAMPLE ${EXAMPLES})
   target_link_libraries(${EXAMPLE} PRIVATE dreams::dreamrender)
   target_compile_options(${EXAMPLE} PRIVATE --embed-dir=${CMAKE_CURRENT_SOURCE_DIR})
 endforeach()
+
+target_link_libraries(transparency PRIVATE X11)

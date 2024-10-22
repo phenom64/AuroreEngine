@@ -86,6 +86,7 @@ export struct window_config {
     unsigned int width = -1;
     unsigned int height = -1;
     bool fullscreen = true;
+    std::map<std::string, std::string> sdl_hints{};
 
     std::string name;
     int version = 1;
@@ -361,6 +362,10 @@ export class window
             if(config.y == -1) config.y = rect.y; else rect.y = config.y;
             if(config.width == -1) config.width = rect.w; else rect.w = config.width;
             if(config.height == -1) config.height = rect.h; else rect.h = config.height;
+
+            for(const auto& [key, value] : config.sdl_hints) {
+                sdl::SetHint(key.c_str(), value.c_str());
+            }
             win = sdl::unique_window(
                 sdl::CreateWindow(config.title.c_str(), rect.x, rect.y, rect.w, rect.h,
                     SDL_WINDOW_SHOWN | (config.fullscreen ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0) | SDL_WINDOW_VULKAN)
