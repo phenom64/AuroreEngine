@@ -230,8 +230,12 @@ export class window
 
                 vk::PresentInfoKHR present_info(renderFinishedSemaphores[currentFrame].get(), swapchain.get(), imageIndex);
                 r = presentQueue.presentKHR(present_info);
-                if(r != vk::Result::eSuccess)
+                if(r == vk::Result::eSuboptimalKHR) {
+                    spdlog::debug("Suboptiomal present result; recreating swapchain");
+                    recreateSwapchain();
+                } else if(r != vk::Result::eSuccess) {
                     spdlog::error("Present failed with result {}", vk::to_string(r));
+                }
 
                 currentFrame = (currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
 
@@ -676,6 +680,34 @@ export class window
                     vk::PipelineCacheCreateInfo cache_info({}, 0, nullptr);
                     pipelineCache = device->createPipelineCacheUnique(cache_info);
                 }
+            }
+        }
+        void recreateSwapchain() {
+            auto usage = vk::ImageUsageFlagBits::eColorAttachment
+                | vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eTransferSrc
+                | vk::ImageUsageFlagBits::eSampled;
+            vk::SwapchainCreateInfoKHR swapchain_info({}, surface.get(), swapchainImageCount,
+                swapchainFormat.format, swapchainFormat.colorSpace,
+                swapchainExtent, 1, usage);
+            swapchain_info.setPresentMode(swapchainPresentMode);
+            swapchain_info.setCompositeAlpha(vk::CompositeAlphaFlagBitsKHR::eInherit);
+            if(swapchainSupport.capabilities.supportedCompositeAlpha & vk::CompositeAlphaFlagBitsKHR::ePreMultiplied)
+                swapchain_info.setCompositeAlpha(vk::CompositeAlphaFlagBitsKHR::ePreMultiplied);
+            swapchain = device->createSwapchainKHRUnique(swapchain_info);
+            swapchainImages = device->getSwapchainImagesKHR(swapchain.get());
+
+            swapchainImageViews.clear();
+            swapchainImageViewsRaw.clear();
+            for(auto& image : swapchainImages)
+            {
+                vk::ImageViewCreateInfo view_info({}, image, vk::ImageViewType::e2D, swapchainFormat.format,
+                    vk::ComponentMapping{}, vk::ImageSubresourceRange(vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1));
+                swapchainImageViews.push_back(device->createImageViewUnique(view_info));
+                swapchainImageViewsRaw.push_back(swapchainImageViews.back().get());
+            }
+
+            if(current_renderer) {
+                current_renderer->prepare(swapchainImages, swapchainImageViewsRaw);
             }
         }
 
