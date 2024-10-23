@@ -683,6 +683,8 @@ export class window
             }
         }
         void recreateSwapchain() {
+            graphicsQueue.waitIdle();
+
             auto usage = vk::ImageUsageFlagBits::eColorAttachment
                 | vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eTransferSrc
                 | vk::ImageUsageFlagBits::eSampled;

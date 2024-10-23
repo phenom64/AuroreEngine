@@ -279,15 +279,15 @@ export class font_renderer {
 
             const auto alignment = allocator.getPhysicalDeviceProperties()->limits.minUniformBufferOffsetAlignment;
 
-            vertexBuffers.clear();
-            vertexMemories.clear();
             vertexPointers.clear();
             vertexMappings.clear();
+            vertexBuffers.clear();
+            vertexMemories.clear();
 
-            uniformBuffers.clear();
-            uniformMemories.clear();
             uniformPointers.clear();
             uniformMappings.clear();
+            uniformBuffers.clear();
+            uniformMemories.clear();
 
             std::vector<vk::WriteDescriptorSet> writes(imageCount*2);
             std::vector<vk::DescriptorBufferInfo> bufferInfos(imageCount);
