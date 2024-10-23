@@ -73,16 +73,7 @@ export class font_renderer {
             vk::Device device, vma::Allocator allocator, vk::Extent2D frameSize)
             : fontName(font_name), fontSize(font_size), device(device), allocator(allocator),
               aspectRatio(static_cast<double>(frameSize.width) / frameSize.height) {}
-        ~font_renderer() {
-            for(int i=0; i<uniformBuffers.size(); i++) {
-                allocator.unmapMemory(uniformMemories[i]);
-                allocator.destroyBuffer(uniformBuffers[i], uniformMemories[i]);
-            }
-            for(int i=0; i<vertexBuffers.size(); i++) {
-                allocator.unmapMemory(vertexMemories[i]);
-                allocator.destroyBuffer(vertexBuffers[i], vertexMemories[i]);
-            }
-        }
+        ~font_renderer() = default;
 
         std::shared_future<void> preload(resource_loader* loader,
             const std::vector<vk::RenderPass>& renderPasses, vk::SampleCountFlagBits sampleCount,
@@ -288,6 +279,16 @@ export class font_renderer {
 
             const auto alignment = allocator.getPhysicalDeviceProperties()->limits.minUniformBufferOffsetAlignment;
 
+            vertexBuffers.clear();
+            vertexMemories.clear();
+            vertexPointers.clear();
+            vertexMappings.clear();
+
+            uniformBuffers.clear();
+            uniformMemories.clear();
+            uniformPointers.clear();
+            uniformMappings.clear();
+
             std::vector<vk::WriteDescriptorSet> writes(imageCount*2);
             std::vector<vk::DescriptorBufferInfo> bufferInfos(imageCount);
             vk::DescriptorImageInfo imageInfo(sampler.get(), fontTexture->imageView.get(), vk::ImageLayout::eShaderReadOnlyOptimal);
@@ -296,25 +297,28 @@ export class font_renderer {
                 {
                     vk::BufferCreateInfo vertex_info({}, maxTexts*maxCharacters*sizeof(VertexCharacter), vk::BufferUsageFlagBits::eVertexBuffer);
                     vma::AllocationCreateInfo va_info({}, vma::MemoryUsage::eCpuToGpu);
-                    auto [vb, va] = allocator.createBuffer(vertex_info, va_info);
-                    vertexBuffers.push_back(vb);
-                    vertexMemories.push_back(va);
-                    vertexPointers.push_back((VertexCharacter*)allocator.mapMemory(va));
+                    auto [vb, va] = allocator.createBufferUnique(vertex_info, va_info);
+                    auto& mapping = vertexMappings.emplace_back(allocator, va.get());
+                    vertexPointers.push_back(reinterpret_cast<VertexCharacter*>(mapping.get()));
+                    vertexBuffers.push_back(std::move(vb));
+                    vertexMemories.push_back(std::move(va));
                 }
 
                 {
                     vk::BufferCreateInfo uniform_info({}, maxTexts*sizeof(TextUniform), vk::BufferUsageFlagBits::eUniformBuffer);
                     vma::AllocationCreateInfo ua_info({}, vma::MemoryUsage::eCpuToGpu);
-                    auto [ub, ua] = allocator.createBuffer(uniform_info, ua_info);
-                    uniformBuffers.push_back(ub);
-                    uniformMemories.push_back(ua);
-                    uniformPointers.push_back(aligned_wrapper<TextUniform>(allocator.mapMemory(ua), alignment));
+                    auto [ub, ua] = allocator.createBufferUnique(uniform_info, ua_info);
+                    auto& mapping = uniformMappings.emplace_back(allocator, ua.get());
+                    uniformPointers.push_back(aligned_wrapper<TextUniform>(mapping.get(), alignment));
 
-                    bufferInfos[i].setBuffer(ub).setOffset(0).setRange(sizeof(TextUniform));
+                    bufferInfos[i].setBuffer(ub.get()).setOffset(0).setRange(sizeof(TextUniform));
                     writes[2*i+0].setDstSet(descriptorSets[i]).setDstBinding(0).setDstArrayElement(0)
                         .setDescriptorType(vk::DescriptorType::eUniformBufferDynamic).setDescriptorCount(1).setBufferInfo(bufferInfos[i]);
                     writes[2*i+1].setDstSet(descriptorSets[i]).setDstBinding(1).setDstArrayElement(0)
                         .setDescriptorType(vk::DescriptorType::eCombinedImageSampler).setDescriptorCount(1).setImageInfo(imageInfo);
+                    
+                    uniformBuffers.push_back(std::move(ub));
+                    uniformMemories.push_back(std::move(ua));
                 }
             }
             device.updateDescriptorSets(writes, {});
@@ -372,7 +376,7 @@ export class font_renderer {
                 uni.textureSize = {fontTexture->width/lineHeight, fontTexture->height/lineHeight};
             }
             cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, pipelines[renderPass].get());
-            cmd.bindVertexBuffers(0, vertexBuffers[frame], vertexOffsets[frame]*sizeof(VertexCharacter));
+            cmd.bindVertexBuffers(0, vertexBuffers[frame].get(), vertexOffsets[frame]*sizeof(VertexCharacter));
             cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, pipelineLayout.get(), 0, descriptorSets[frame], uniformPointers[frame].offset(uniformOffsets[frame]));
             cmd.draw(text.size(), 1, 0, 0);
 
@@ -426,13 +430,15 @@ export class font_renderer {
         vk::UniqueDescriptorPool descriptorPool;
         std::vector<vk::DescriptorSet> descriptorSets;
 
-        std::vector<vk::Buffer> uniformBuffers;
-        std::vector<vma::Allocation> uniformMemories;
+        std::vector<vma::UniqueBuffer> uniformBuffers;
+        std::vector<vma::UniqueAllocation> uniformMemories;
         std::vector<vk::DeviceSize> uniformOffsets;
+        std::vector<vma::MemoryMapping> uniformMappings;
 
-        std::vector<vk::Buffer> vertexBuffers;
-        std::vector<vma::Allocation> vertexMemories;
+        std::vector<vma::UniqueBuffer> vertexBuffers;
+        std::vector<vma::UniqueAllocation> vertexMemories;
         std::vector<uint32_t> vertexOffsets;
+        std::vector<vma::MemoryMapping> vertexMappings;
 };
 
 }
