@@ -116,7 +116,7 @@ export class gui_renderer {
             for(auto& v : vertices_vector) {
                 v.color *= color;
             }
-            simple_renderer->renderGeneric(commandBuffer, frame, renderPass, vertices, p);
+            simple_renderer->renderGeneric(commandBuffer, frame, renderPass, vertices_vector, p);
         }
         void draw_quad(std::ranges::range auto vertices, simple_renderer::params p = {})
             requires(std::same_as<std::ranges::range_value_t<decltype(vertices)>, simple_renderer::vertex_data>)
@@ -125,7 +125,7 @@ export class gui_renderer {
             for(auto& v : vertices_vector) {
                 v.color *= color;
             }
-            simple_renderer->renderQuad(commandBuffer, frame, renderPass, vertices, p);
+            simple_renderer->renderQuad(commandBuffer, frame, renderPass, vertices_vector, p);
         }
         void draw_rect(glm::vec2 position, glm::vec2 size, glm::vec4 color = glm::vec4(1.0, 1.0, 1.0, 1.0), simple_renderer::params p = {}) {
             simple_renderer->renderRect(commandBuffer, frame, renderPass, position, size, color*this->color, p);
