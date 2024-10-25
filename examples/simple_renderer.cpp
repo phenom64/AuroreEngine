@@ -53,9 +53,9 @@ class simple_phase : public dreamrender::phase {
             commandBuffer.setScissor(0, scissor);
 
             simpleRenderer.renderQuad(commandBuffer, frame, renderPass.get(), std::array{
-                dreamrender::simple_renderer::vertex_data{{0.5f, -1.0f}, {0.2f, 0.2f, 0.2f, 0.2f}, {0.0f, 0.0f}},
-                dreamrender::simple_renderer::vertex_data{{0.5f, 1.0f}, {0.2f, 0.2f, 0.2f, 0.2f}, {0.0f, 1.0f}},
-                dreamrender::simple_renderer::vertex_data{{0.9f, -1.0f}, {0.0f, 0.0f, 0.0f, 0.0f}, {1.0f, 0.0f}},
+                dreamrender::simple_renderer::vertex_data{{0.75f, 0.0f}, {0.2f, 0.2f, 0.2f, 0.2f}, {0.0f, 0.0f}},
+                dreamrender::simple_renderer::vertex_data{{0.75f, 1.0f}, {0.2f, 0.2f, 0.2f, 0.2f}, {0.0f, 1.0f}},
+                dreamrender::simple_renderer::vertex_data{{0.9f, 0.0f}, {0.0f, 0.0f, 0.0f, 0.0f}, {1.0f, 0.0f}},
                 dreamrender::simple_renderer::vertex_data{{0.9f, 1.0f}, {0.0f, 0.0f, 0.0f, 0.0f}, {1.0f, 1.0f}},
             }, dreamrender::simple_renderer::params{
                 std::array{

@@ -3,6 +3,7 @@
 #include <vector>
 
 import dreamrender;
+import glm;
 import spdlog;
 import vulkan_hpp;
 
@@ -19,7 +20,8 @@ class simple_phase : public dreamrender::phase {
     public:
         simple_phase(dreamrender::window* win) : dreamrender::phase(win),
             fontRenderer{"/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf", 64, device, allocator, win->swapchainExtent},
-            imageRenderer(device, win->swapchainExtent) {}
+            imageRenderer(device, win->swapchainExtent),
+            simpleRenderer(device, allocator, win->swapchainExtent) {}
 
         vk::UniqueRenderPass renderPass;
         std::vector<vk::UniqueFramebuffer> framebuffers;
@@ -27,6 +29,7 @@ class simple_phase : public dreamrender::phase {
         dreamrender::texture texture{device, allocator};
         dreamrender::font_renderer fontRenderer;
         dreamrender::image_renderer imageRenderer;
+        dreamrender::simple_renderer simpleRenderer;
 
         void preload() override {
             phase::preload();
@@ -43,6 +46,7 @@ class simple_phase : public dreamrender::phase {
 
             add_task(fontRenderer.preload(loader, {renderPass.get()}, win->config.sampleCount));
             imageRenderer.preload({renderPass.get()}, win->config.sampleCount);
+            simpleRenderer.preload({renderPass.get()}, win->config.sampleCount);
             add_task(loader->loadTexture(&texture, dreamrender::LoadDataView{example_image, "PNG"}));
         }
         void prepare(std::vector<vk::Image> swapchainImages, std::vector<vk::ImageView> swapchainViews) override {
@@ -52,6 +56,7 @@ class simple_phase : public dreamrender::phase {
 
             fontRenderer.prepare(swapchainImages.size());
             imageRenderer.prepare(swapchainImages.size());
+            simpleRenderer.prepare(swapchainImages.size());
         }
         void init() override {
             phase::init();
@@ -70,9 +75,23 @@ class simple_phase : public dreamrender::phase {
             commandBuffer.setViewport(0, viewport);
             commandBuffer.setScissor(0, scissor);
 
-            dreamrender::gui_renderer gui(commandBuffer, frame, renderPass.get(), win->swapchainExtent, &fontRenderer, &imageRenderer);
+            dreamrender::gui_renderer gui(commandBuffer, frame, renderPass.get(), win->swapchainExtent, &fontRenderer, &imageRenderer, &simpleRenderer);
             gui.draw_text("Hello World!", 0.0f, 0.0f, 0.1f);
             gui.draw_image_sized(texture, 0.25f, 0.25f, gui.frame_size.width/2, gui.frame_size.height/2);
+            gui.draw_quad(std::array{
+                dreamrender::simple_renderer::vertex_data{{0.75f, 0.0f}, {0.2f, 0.2f, 0.2f, 0.2f}, {0.0f, 0.0f}},
+                dreamrender::simple_renderer::vertex_data{{0.75f, 1.0f}, {0.2f, 0.2f, 0.2f, 0.2f}, {0.0f, 1.0f}},
+                dreamrender::simple_renderer::vertex_data{{0.9f, 0.0f}, {0.0f, 0.0f, 0.0f, 0.0f}, {1.0f, 0.0f}},
+                dreamrender::simple_renderer::vertex_data{{0.9f, 1.0f}, {0.0f, 0.0f, 0.0f, 0.0f}, {1.0f, 1.0f}},
+            }, dreamrender::simple_renderer::params{
+                std::array{
+                    glm::vec2{0.0f, 0.1f},
+                    glm::vec2{0.0f, 0.0f},
+                    glm::vec2{-0.05f, 0.05f},
+                    glm::vec2{-0.05f, 0.05f},
+                }
+            });
+            gui.draw_text("Sidebar!", 0.75f, 0.0f, 0.1f);
 
             commandBuffer.endRenderPass();
 

@@ -11,8 +11,8 @@ layout(location = 3) out vec2 outTexCoords;
 
 void main()
 {
-	outPosition = inPosition;
-	outFlatPosition = inPosition;
+	outPosition = inPosition*2.0 - vec2(1.0, 1.0);
+	outFlatPosition = outPosition;
 	outColor = inColor;
 	outTexCoords = inTexCoords;
 
