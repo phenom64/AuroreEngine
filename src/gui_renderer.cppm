@@ -46,6 +46,17 @@ export class gui_renderer {
         }
         void reset_color() {
             this->color = glm::vec4(1.0f);
+            color_stack.clear();
+        }
+        void push_color(glm::vec4 color) {
+            color_stack.push_back(this->color);
+            set_color(this->color*color);
+        }
+        void pop_color() {
+            if(color_stack.empty())
+                return;
+            set_color(color_stack.back());
+            color_stack.pop_back();
         }
 
         void set_clip(float x, float y, float width, float height) {
@@ -160,6 +171,7 @@ export class gui_renderer {
         vk::RenderPass renderPass;
 
         glm::vec4 color = glm::vec4(1.0f);
+        std::vector<glm::vec4> color_stack;
 };
 
 }
