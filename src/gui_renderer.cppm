@@ -29,21 +29,11 @@ export class gui_renderer {
         const vk::Extent2D frame_size;
         const double aspect_ratio;
 
+        [[deprecated("ignores the color stack; use push_color_direct instead")]]
         void set_color(glm::vec4 color) {
             this->color = color;
         }
-        void set_color(glm::vec3 color) {
-            this->color = glm::vec4(color, this->color.a);
-        }
-        void set_color(float r, float g, float b, float a) {
-            this->color = glm::vec4(r, g, b, a);
-        }
-        void set_color(float r, float g, float b) {
-            this->color = glm::vec4(r, g, b, this->color.a);
-        }
-        void set_alpha(float alpha) {
-            this->color.a = alpha;
-        }
+        [[deprecated("ignores the color stack; use pop_color instead")]]
         void reset_color() {
             this->color = glm::vec4(1.0f);
             color_stack.clear();
@@ -51,6 +41,10 @@ export class gui_renderer {
         void push_color(glm::vec4 color) {
             color_stack.push_back(this->color);
             set_color(this->color*color);
+        }
+        void push_color_direct(glm::vec4 color) {
+            color_stack.push_back(this->color);
+            set_color(color);
         }
         void pop_color() {
             if(color_stack.empty())
