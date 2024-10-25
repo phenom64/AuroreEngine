@@ -20,6 +20,7 @@ set(MODULE_SOURCES
 
   components/font_renderer.cppm
   components/image_renderer.cppm
+  components/simple_renderer.cppm
 )
 
 add_library(dreamrender ${SOURCES})

@@ -4,6 +4,7 @@ set(EXAMPLES
   image_renderer
   gui_renderer
   transparency
+  simple_renderer
 )
 
 foreach(EXAMPLE ${EXAMPLES})

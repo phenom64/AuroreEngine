@@ -61,4 +61,26 @@ namespace image_renderer {
     }
 }
 
+namespace simple_renderer {
+    #pragma clang diagnostic push
+    #pragma clang diagnostic ignored "-Wc23-extensions"
+    constexpr char vert_array[] = {
+    #embed "shaders/simple_renderer.vert.spv"
+    };
+    constexpr char frag_array[] = {
+    #embed "shaders/simple_renderer.frag.spv"
+    };
+    #pragma clang diagnostic pop
+
+    constexpr std::array vert_shader = convert<std::to_array(vert_array), uint32_t>();
+    constexpr std::array frag_shader = convert<std::to_array(frag_array), uint32_t>();
+
+    vk::UniqueShaderModule vert(vk::Device device) {
+        return createShader(device, vert_shader);
+    }
+    vk::UniqueShaderModule frag(vk::Device device) {
+        return createShader(device, frag_shader);
+    }
+}
+
 }
