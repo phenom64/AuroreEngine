@@ -91,6 +91,10 @@ export struct window_config {
     std::string name;
     int version = 1;
 
+    std::optional<unsigned int> device_index;
+    std::optional<std::string> device_name;
+    std::optional<std::string> device_uuid;
+
     vk::PresentModeKHR preferredPresentMode = vk::PresentModeKHR::eFifoRelaxed;
     int fpsLimit = -1;
     vk::SampleCountFlagBits sampleCount = vk::SampleCountFlagBits::e1;
@@ -468,20 +472,58 @@ export class window
                 spdlog::error("Found no video device with Vulkan support!");
                 throw std::runtime_error("no vulkan device");
             }
-            spdlog::debug("Found {} video devices", devices.size());
+            spdlog::debug("Found {} video devices:", devices.size());
+
+            const char* env;
+
+            std::optional<unsigned int> device_index = config.device_index;
+            if(!device_index.has_value() && (env = std::getenv("DREAMRENDER_DEVICE_INDEX"))) {
+                device_index = std::stoi(env);
+            }
+            std::optional<std::string> device_name = config.device_name;
+            if(!device_name.has_value() && (env = std::getenv("DREAMRENDER_DEVICE_NAME"))) {
+                device_name = env;
+            }
+            std::optional<std::string> device_uuid = config.device_uuid;
+            if(!device_uuid.has_value() && (env = std::getenv("DREAMRENDER_DEVICE_UUID"))) {
+                device_uuid = env;
+            }
 
             std::multimap<int, vk::PhysicalDevice> candidates;
-            for(auto& dev : devices)
+            for(unsigned int i=0; i<devices.size(); i++)
             {
+                const auto& dev = devices[i];
+                auto props = dev.getProperties();
+                auto uuid = props.pipelineCacheUUID;
+                std::ostringstream uuidStrStream;
+                uuidStrStream << std::hex << std::setfill('0');
+                for(int i=0; i<uuid.size(); i++)
+                {
+                    uuidStrStream << std::setw(2) << static_cast<unsigned int>(uuid[i]);
+                }
+                std::string uuidStr = uuidStrStream.str();
+
                 int score = rateDeviceSuitability(dev);
+                spdlog::debug("- Device {} \"{}\" ({}) -> {}", vk::to_string(props.deviceType), props.deviceName, uuidStr, score);
+
+                if(device_index.has_value() && device_index.value() == i) {
+                    score = std::numeric_limits<int>::max();
+                }
+                if(device_name.has_value() && device_name.value() == std::string{props.deviceName}) {
+                    score = std::numeric_limits<int>::max();
+                }
+                if(device_uuid.has_value() && device_uuid.value() == uuidStr) {
+                    score = std::numeric_limits<int>::max();
+                }
+
+                if(score == std::numeric_limits<int>::max()) {
+                    spdlog::info("Force selected device {} \"{}\" ({})", vk::to_string(props.deviceType), props.deviceName, uuidStr);
+                }
                 candidates.insert({score, dev});
             }
-            if(candidates.rbegin()->first > 0)
-            {
+            if(candidates.rbegin()->first > 0) {
                 physicalDevice = candidates.rbegin()->second;
-            }
-            else
-            {
+            } else {
                 spdlog::error("Found suitable video device!");
                 throw std::runtime_error("no suitable device");
             }
@@ -718,9 +760,9 @@ export class window
 
             auto props = phyDev.getProperties();
             if(props.deviceType == vk::PhysicalDeviceType::eDiscreteGpu)
-                score += 1000;
+                score += 10000;
             if(props.deviceType == vk::PhysicalDeviceType::eIntegratedGpu)
-                score += 500;
+                score += 5000;
             score += props.limits.maxImageDimension2D;
 
             if(!findQueueFamilies(phyDev).isComplete())
