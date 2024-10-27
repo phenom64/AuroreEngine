@@ -129,8 +129,8 @@ export class simple_renderer {
             std::array vertices = {
                 vertex_data{position + glm::vec2(0.0f, 0.0f), color, glm::vec2(0.0f, 0.0f)},
                 vertex_data{position + glm::vec2(size.x, 0.0f), color, glm::vec2(1.0f, 0.0f)},
-                vertex_data{position + glm::vec2(size.x, size.y), color, glm::vec2(1.0f, 1.0f)},
                 vertex_data{position + glm::vec2(0.0f, size.y), color, glm::vec2(0.0f, 1.0f)},
+                vertex_data{position + glm::vec2(size.x, size.y), color, glm::vec2(1.0f, 1.0f)},
             };
             renderQuad(cmd, frame, renderPass, vertices, p);
         }
