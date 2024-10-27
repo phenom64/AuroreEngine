@@ -2,6 +2,8 @@ module;
 
 #include <vector>
 
+#include <iostream>
+
 export module dreamrender:components.simple_renderer;
 
 import :shaders;
@@ -14,6 +16,14 @@ import vma;
 
 namespace dreamrender {
 
+
+export struct simple_params {
+    std::array<glm::vec2, 4> blur;
+    std::array<float, 4> border_radius;
+
+    float aspect_ratio = std::numeric_limits<float>::quiet_NaN();
+};
+
 export class simple_renderer {
     public:
         struct vertex_data {
@@ -21,9 +31,7 @@ export class simple_renderer {
             glm::vec4 color;
             glm::vec2 tex_coords;
         };
-        struct params {
-            std::array<glm::vec2, 4> blur;
-        };
+        using params = simple_params;
 
         simple_renderer(vk::Device device, vma::Allocator allocator, vk::Extent2D frameSize) :
             device(device), allocator(allocator), frameSize(frameSize),
@@ -132,6 +140,9 @@ export class simple_renderer {
                 vertex_data{position + glm::vec2(0.0f, size.y), color, glm::vec2(0.0f, 1.0f)},
                 vertex_data{position + glm::vec2(size.x, size.y), color, glm::vec2(1.0f, 1.0f)},
             };
+            if(p.aspect_ratio != p.aspect_ratio) {
+                p.aspect_ratio = aspectRatio * (size.x/size.y);
+            }
             renderQuad(cmd, frame, renderPass, vertices, p);
         }
 

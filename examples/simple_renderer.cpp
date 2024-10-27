@@ -65,6 +65,10 @@ class simple_phase : public dreamrender::phase {
                     glm::vec2{-0.05f, 0.05f},
                 }
             });
+            simpleRenderer.renderRect(commandBuffer, frame, renderPass.get(), glm::vec2{0.1f, 0.1f}, glm::vec2{0.25f, 0.2f}, glm::vec4{1.0f, 0.0f, 0.0f, 1.0f},
+                dreamrender::simple_renderer::params{
+                    {}, {0.1f, 0.3f, 0.5f, 0.7f}
+                });
 
             commandBuffer.endRenderPass();
             commandBuffer.end();
