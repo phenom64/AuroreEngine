@@ -121,7 +121,6 @@ export namespace sdl {
         constexpr GameControllerType NINTENDO_SWITCH_JOYCON_LEFT = SDL_CONTROLLER_TYPE_NINTENDO_SWITCH_JOYCON_LEFT;
         constexpr GameControllerType NINTENDO_SWITCH_JOYCON_RIGHT = SDL_CONTROLLER_TYPE_NINTENDO_SWITCH_JOYCON_RIGHT;
         constexpr GameControllerType NINTENDO_SWITCH_JOYCON_PAIR = SDL_CONTROLLER_TYPE_NINTENDO_SWITCH_JOYCON_PAIR;
-        constexpr GameControllerType max = SDL_CONTROLLER_TYPE_MAX;
     };
 
     constexpr auto enable = SDL_ENABLE;
