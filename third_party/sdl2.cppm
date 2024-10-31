@@ -40,6 +40,7 @@ export namespace sdl {
     ALIAS_FUNCTION(GameControllerName, SDL_GameControllerName);
     ALIAS_FUNCTION(GameControllerGetJoystick, SDL_GameControllerGetJoystick);
     ALIAS_FUNCTION(GameControllerRumble, SDL_GameControllerRumble);
+    ALIAS_FUNCTION(GameControllerGetType, SDL_GameControllerGetType);
     ALIAS_FUNCTION(JoystickInstanceID, SDL_JoystickInstanceID);
     ALIAS_FUNCTION(NumHaptics, SDL_NumHaptics);
     ALIAS_FUNCTION(HapticOpenFromJoystick, SDL_HapticOpenFromJoystick);
@@ -66,6 +67,7 @@ export namespace sdl {
     using GameController = SDL_GameController;
     using GameControllerButton = SDL_GameControllerButton;
     using GameControllerAxis = SDL_GameControllerAxis;
+    using GameControllerType = SDL_GameControllerType;
     using JoystickID = SDL_JoystickID;
     using PixelFormatEnum = SDL_PixelFormatEnum;
     using Surface = SDL_Surface;
@@ -103,6 +105,23 @@ export namespace sdl {
         constexpr GameControllerAxis RIGHTY = SDL_CONTROLLER_AXIS_RIGHTY;
         constexpr GameControllerAxis TRIGGERLEFT = SDL_CONTROLLER_AXIS_TRIGGERLEFT;
         constexpr GameControllerAxis TRIGGERRIGHT = SDL_CONTROLLER_AXIS_TRIGGERRIGHT;
+    };
+    namespace GameControllerTypeValues {
+        constexpr GameControllerType UNKNOWN = SDL_CONTROLLER_TYPE_UNKNOWN;
+        constexpr GameControllerType XBOX360 = SDL_CONTROLLER_TYPE_XBOX360;
+        constexpr GameControllerType XBOXONE = SDL_CONTROLLER_TYPE_XBOXONE;
+        constexpr GameControllerType PS3 = SDL_CONTROLLER_TYPE_PS3;
+        constexpr GameControllerType PS4 = SDL_CONTROLLER_TYPE_PS4;
+        constexpr GameControllerType NINTENDO_SWITCH_PRO = SDL_CONTROLLER_TYPE_NINTENDO_SWITCH_PRO;
+        constexpr GameControllerType VIRTUAL = SDL_CONTROLLER_TYPE_VIRTUAL;
+        constexpr GameControllerType PS5 = SDL_CONTROLLER_TYPE_PS5;
+        constexpr GameControllerType AMAZON_LUNA = SDL_CONTROLLER_TYPE_AMAZON_LUNA;
+        constexpr GameControllerType GOOGLE_STADIA = SDL_CONTROLLER_TYPE_GOOGLE_STADIA;
+        constexpr GameControllerType NVIDIA_SHIELD = SDL_CONTROLLER_TYPE_NVIDIA_SHIELD;
+        constexpr GameControllerType NINTENDO_SWITCH_JOYCON_LEFT = SDL_CONTROLLER_TYPE_NINTENDO_SWITCH_JOYCON_LEFT;
+        constexpr GameControllerType NINTENDO_SWITCH_JOYCON_RIGHT = SDL_CONTROLLER_TYPE_NINTENDO_SWITCH_JOYCON_RIGHT;
+        constexpr GameControllerType NINTENDO_SWITCH_JOYCON_PAIR = SDL_CONTROLLER_TYPE_NINTENDO_SWITCH_JOYCON_PAIR;
+        constexpr GameControllerType max = SDL_CONTROLLER_TYPE_MAX;
     };
 
     constexpr auto enable = SDL_ENABLE;
