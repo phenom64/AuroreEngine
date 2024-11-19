@@ -1,6 +1,16 @@
 module;
 
 #include <utility>
+
+#include <vulkan/vulkan.h>
+#if VK_HEADER_VERSION >= 290
+#include <vulkan/vulkan.hpp>
+namespace vk {
+    using vk::detail::resultCheck;
+    using vk::detail::createResultValueType;
+}
+#endif
+
 #include <vk_mem_alloc.hpp>
 
 export module vma;
