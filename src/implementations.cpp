@@ -5,6 +5,9 @@ namespace vk {
     using vk::detail::resultCheck;
     using vk::detail::createResultValueType;
 }
+#else
+import vulkan_hpp;
+#include <vulkan/vulkan_hpp_macros.hpp>
 #endif
 
 #if VULKAN_HPP_DISPATCH_LOADER_DYNAMIC == 1
