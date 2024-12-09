@@ -393,7 +393,7 @@ export class window
         decltype(std::chrono::high_resolution_clock::now()) startTime;
         decltype(std::chrono::high_resolution_clock::now()) lastFrame;
 
-        static constexpr int fpsSampleRate = 10;
+        static constexpr int fpsSampleRate = 5;
         uint64_t framesInSecond{};
         decltype(std::chrono::high_resolution_clock::now()) lastFPS;
         int fpsCount{};
