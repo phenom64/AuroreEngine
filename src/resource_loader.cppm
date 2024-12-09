@@ -10,6 +10,7 @@ module;
 #include <string_view>
 #include <thread>
 #include <variant>
+#include <version>
 
 export module dreamrender:resource_loader;
 
@@ -33,7 +34,11 @@ enum class LoadType
     Model
 };
 
+#if __cpp_lib_move_only_function >= 202110L
 export using LoaderFunction = std::move_only_function<void(uint8_t*, size_t)>;
+#else
+export using LoaderFunction = std::function<void(uint8_t*, size_t)>;
+#endif
 export struct LoadDataView {
     std::span<const uint8_t> data;
     std::string type;

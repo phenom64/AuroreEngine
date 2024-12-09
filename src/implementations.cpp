@@ -1,3 +1,5 @@
+#include <compare>
+
 #include <vulkan/vulkan.h>
 #if VK_HEADER_VERSION >= 290
 #include <vulkan/vulkan.hpp>

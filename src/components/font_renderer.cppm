@@ -9,6 +9,7 @@ module;
 #include <string>
 #include <string_view>
 #include <vector>
+#include <version>
 
 #include <freetype2/ft2build.h>
 #include <freetype/freetype.h>
@@ -146,8 +147,13 @@ export class font_renderer {
             lineHeight = maxHeight;
 
             struct guarantee_order {
+#if __cpp_lib_move_only_function >= 202110L
                 std::unique_ptr<ft_library_wrapper> ftManager;
                 std::unique_ptr<ft_face_wrapper> ftFace;
+#else
+                std::shared_ptr<ft_library_wrapper> ftManager;
+                std::shared_ptr<ft_face_wrapper> ftFace;
+#endif
             } go {
                 std::move(ftManager), std::move(ftFace)
             };
@@ -316,7 +322,7 @@ export class font_renderer {
                         .setDescriptorType(vk::DescriptorType::eUniformBufferDynamic).setDescriptorCount(1).setBufferInfo(bufferInfos[i]);
                     writes[2*i+1].setDstSet(descriptorSets[i]).setDstBinding(1).setDstArrayElement(0)
                         .setDescriptorType(vk::DescriptorType::eCombinedImageSampler).setDescriptorCount(1).setImageInfo(imageInfo);
-                    
+
                     uniformBuffers.push_back(std::move(ub));
                     uniformMemories.push_back(std::move(ua));
                 }
