@@ -7,6 +7,7 @@ module;
 #include <iterator>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <set>
 #include <thread>
@@ -106,6 +107,7 @@ export class window
         window(window_config config) : config(config) {}
         window(window_config&& config) : config(std::move(config)) {}
         ~window() {
+            std::scoped_lock lock(renderLock);
             device->waitIdle();
             {
                 auto data = device->getPipelineCacheData(pipelineCache.get());
@@ -214,6 +216,7 @@ export class window
                     }
                 }
 
+                std::scoped_lock lock(renderLock);
                 r = device->waitForFences(inFlightFences[currentFrame], true, UINT64_MAX);
                 if(r != vk::Result::eSuccess)
                     spdlog::error("Waiting for inFlightFences[{}] failed with result {}", currentFrame, vk::to_string(r));
@@ -259,6 +262,52 @@ export class window
                     }
                     fpsCount++;
                 }
+            }
+        }
+
+        void recreateSwapchain(bool recreate = true) {
+            std::scoped_lock lock(renderLock);
+            spdlog::debug("(Re)Creating swapchain");
+
+            if(recreate) {
+                graphicsQueue.waitIdle();
+            }
+
+            auto presentModeIt = std::find_if(swapchainSupport.presentModes.begin(), swapchainSupport.presentModes.end(), [this](auto p){
+                return p == config.preferredPresentMode;
+            });
+            swapchainPresentMode = presentModeIt == swapchainSupport.presentModes.end() ? swapchainSupport.presentModes[0] : *presentModeIt;
+
+            spdlog::debug("Swapchain of format {}, present mode {}, extent {}x{} and {} images (composite alpha: {})",
+                vk::to_string(swapchainFormat.format), vk::to_string(swapchainPresentMode),
+                swapchainExtent.width, swapchainExtent.height, swapchainImageCount,
+                vk::to_string(swapchainSupport.capabilities.supportedCompositeAlpha));
+
+            auto usage = vk::ImageUsageFlagBits::eColorAttachment
+                | vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eTransferSrc
+                | vk::ImageUsageFlagBits::eSampled;
+            vk::SwapchainCreateInfoKHR swapchain_info({}, surface.get(), swapchainImageCount,
+                swapchainFormat.format, swapchainFormat.colorSpace,
+                swapchainExtent, 1, usage);
+            swapchain_info.setPresentMode(swapchainPresentMode);
+            swapchain_info.setCompositeAlpha(vk::CompositeAlphaFlagBitsKHR::eInherit);
+            if(swapchainSupport.capabilities.supportedCompositeAlpha & vk::CompositeAlphaFlagBitsKHR::ePreMultiplied)
+                swapchain_info.setCompositeAlpha(vk::CompositeAlphaFlagBitsKHR::ePreMultiplied);
+            swapchain = device->createSwapchainKHRUnique(swapchain_info);
+            swapchainImages = device->getSwapchainImagesKHR(swapchain.get());
+
+            swapchainImageViews.clear();
+            swapchainImageViewsRaw.clear();
+            for(auto& image : swapchainImages)
+            {
+                vk::ImageViewCreateInfo view_info({}, image, vk::ImageViewType::e2D, swapchainFormat.format,
+                    vk::ComponentMapping{}, vk::ImageSubresourceRange(vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1));
+                swapchainImageViews.push_back(device->createImageViewUnique(view_info));
+                swapchainImageViewsRaw.push_back(swapchainImageViews.back().get());
+            }
+
+            if(recreate && current_renderer) {
+                current_renderer->prepare(swapchainImages, swapchainImageViewsRaw);
             }
         }
 
@@ -350,6 +399,7 @@ export class window
         int fpsCount{};
         double currentFPS{};
         int refreshRate{};
+        std::recursive_mutex renderLock{};
 
         struct sdl_controller_closer {
             void operator()(sdl::GameController* ptr) const {
@@ -413,6 +463,8 @@ export class window
             }
         }
         void initVulkan() {
+            std::scoped_lock lock(renderLock);
+
             vk::DynamicLoader dl;
             PFN_vkGetInstanceProcAddr vkGetInstanceProcAddr = dl.getProcAddress<PFN_vkGetInstanceProcAddr>("vkGetInstanceProcAddr");
             VULKAN_HPP_DEFAULT_DISPATCHER.init(vkGetInstanceProcAddr);
@@ -648,45 +700,20 @@ export class window
                     vk::to_string(props.bufferFeatures));
             }
 
-            auto presentModeIt = std::find_if(swapchainSupport.presentModes.begin(), swapchainSupport.presentModes.end(), [this](auto p){
-                return p == config.preferredPresentMode;
-            });
-            swapchainPresentMode = presentModeIt == swapchainSupport.presentModes.end() ? swapchainSupport.presentModes[0] : *presentModeIt;
-
             swapchainExtent = vk::Extent2D{
                 std::clamp(window_width, swapchainSupport.capabilities.minImageExtent.width, swapchainSupport.capabilities.maxImageExtent.width),
                 std::clamp(window_height, swapchainSupport.capabilities.minImageExtent.height, swapchainSupport.capabilities.maxImageExtent.height)
             };
 
             swapchainImageCount = swapchainSupport.capabilities.minImageCount + 1;
-            if(swapchainSupport.capabilities.maxImageCount > 0)
+            if(swapchainSupport.capabilities.maxImageCount > 0) {
                 swapchainImageCount = std::min(swapchainImageCount, swapchainSupport.capabilities.maxImageCount);
+            }
 
-            spdlog::debug("Swapchain of format {}, present mode {}, extent {}x{} and {} images (composite alpha: {})",
-                vk::to_string(swapchainFormat.format), vk::to_string(swapchainPresentMode),
-                swapchainExtent.width, swapchainExtent.height, swapchainImageCount,
-                vk::to_string(swapchainSupport.capabilities.supportedCompositeAlpha));
-
-            auto usage = vk::ImageUsageFlagBits::eColorAttachment
-                | vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eTransferSrc
-                | vk::ImageUsageFlagBits::eSampled;
-            vk::SwapchainCreateInfoKHR swapchain_info({}, surface.get(), swapchainImageCount,
-                swapchainFormat.format, swapchainFormat.colorSpace,
-                swapchainExtent, 1, usage);
-            swapchain_info.setPresentMode(swapchainPresentMode);
-            swapchain_info.setCompositeAlpha(vk::CompositeAlphaFlagBitsKHR::eInherit);
-            if(swapchainSupport.capabilities.supportedCompositeAlpha & vk::CompositeAlphaFlagBitsKHR::ePreMultiplied)
-                swapchain_info.setCompositeAlpha(vk::CompositeAlphaFlagBitsKHR::ePreMultiplied);
-            swapchain = device->createSwapchainKHRUnique(swapchain_info);
-            swapchainImages = device->getSwapchainImagesKHR(swapchain.get());
+            recreateSwapchain(false);
 
             for(auto& image : swapchainImages)
             {
-                vk::ImageViewCreateInfo view_info({}, image, vk::ImageViewType::e2D, swapchainFormat.format,
-                    vk::ComponentMapping{}, vk::ImageSubresourceRange(vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1));
-                swapchainImageViews.push_back(device->createImageViewUnique(view_info));
-                swapchainImageViewsRaw.push_back(swapchainImageViews.back().get());
-
                 imageAvailableSemaphores.push_back(device->createSemaphoreUnique(vk::SemaphoreCreateInfo()));
                 renderFinishedSemaphores.push_back(device->createSemaphoreUnique(vk::SemaphoreCreateInfo()));
                 fences.push_back(device->createFenceUnique(vk::FenceCreateInfo(vk::FenceCreateFlagBits::eSignaled)));
@@ -722,36 +749,6 @@ export class window
                     vk::PipelineCacheCreateInfo cache_info({}, 0, nullptr);
                     pipelineCache = device->createPipelineCacheUnique(cache_info);
                 }
-            }
-        }
-        void recreateSwapchain() {
-            graphicsQueue.waitIdle();
-
-            auto usage = vk::ImageUsageFlagBits::eColorAttachment
-                | vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eTransferSrc
-                | vk::ImageUsageFlagBits::eSampled;
-            vk::SwapchainCreateInfoKHR swapchain_info({}, surface.get(), swapchainImageCount,
-                swapchainFormat.format, swapchainFormat.colorSpace,
-                swapchainExtent, 1, usage);
-            swapchain_info.setPresentMode(swapchainPresentMode);
-            swapchain_info.setCompositeAlpha(vk::CompositeAlphaFlagBitsKHR::eInherit);
-            if(swapchainSupport.capabilities.supportedCompositeAlpha & vk::CompositeAlphaFlagBitsKHR::ePreMultiplied)
-                swapchain_info.setCompositeAlpha(vk::CompositeAlphaFlagBitsKHR::ePreMultiplied);
-            swapchain = device->createSwapchainKHRUnique(swapchain_info);
-            swapchainImages = device->getSwapchainImagesKHR(swapchain.get());
-
-            swapchainImageViews.clear();
-            swapchainImageViewsRaw.clear();
-            for(auto& image : swapchainImages)
-            {
-                vk::ImageViewCreateInfo view_info({}, image, vk::ImageViewType::e2D, swapchainFormat.format,
-                    vk::ComponentMapping{}, vk::ImageSubresourceRange(vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1));
-                swapchainImageViews.push_back(device->createImageViewUnique(view_info));
-                swapchainImageViewsRaw.push_back(swapchainImageViews.back().get());
-            }
-
-            if(current_renderer) {
-                current_renderer->prepare(swapchainImages, swapchainImageViewsRaw);
             }
         }
 
