@@ -93,6 +93,22 @@ export class gui_renderer {
         {
             image_renderer->renderImage(commandBuffer, frame, renderPass, texture, x, y, scaleX, scaleY, color*this->color);
         }
+        void draw_image_a(const texture& texture, float x, float y, float scaleX = 1.0f, float scaleY = 1.0f,
+            glm::vec4 color = glm::vec4(1.0, 1.0, 1.0, 1.0), bool center = true)
+        {
+            if(texture.width > texture.height) {
+                if(center) {
+                    y += scaleY*(1.0f - static_cast<float>(texture.height) / texture.width) / 2.0f;
+                }
+                scaleY *= static_cast<float>(texture.height) / texture.width;
+            } else if(texture.height > texture.width) {
+                if(center) {
+                    x += scaleX*(1.0f - static_cast<float>(texture.width) / texture.height) / 2.0f;
+                }
+                scaleX *= static_cast<float>(texture.width) / texture.height;
+            }
+            image_renderer->renderImage(commandBuffer, frame, renderPass, texture, x, y, scaleX, scaleY, color*this->color);
+        }
         void draw_image(vk::ImageView view, float x, float y, float scaleX = 1.0f, float scaleY = 1.0f,
             glm::vec4 color = glm::vec4(1.0, 1.0, 1.0, 1.0))
         {
