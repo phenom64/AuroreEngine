@@ -13,6 +13,7 @@ module dreamrender;
 import :debug;
 import :resource_loader;
 import :texture;
+import :utils;
 
 import glm;
 import sdl2;
@@ -33,6 +34,15 @@ namespace dreamrender {
             return std::format("data at {}", static_cast<const void*>(std::get<LoadDataView>(src).data.data()));
         else
             return "unknown";
+    }
+
+    [[gnu::always_inline]] static bool check_state(unsigned int index, LoadTask& task) {
+        loading_state state = loading_state::queued;
+        if(!task.state->compare_exchange_strong(state, loading_state::loading)) {
+            spdlog::debug("[Resource Loader {}] Task {} is already destroyed", index, task.source_name());
+            return false;
+        }
+        return true;
     }
 
     bool load_texture(
@@ -63,6 +73,8 @@ namespace dreamrender {
             {
                 spdlog::error("[Resource Loader {}] Failed to load image {}", index, name);
                 std::scoped_lock<std::mutex> l(lock);
+                if(!check_state(index, task))
+                    return false;
                 tex->create_image(1, 1); // create fake image to avoid crash
                 return false;
             }
@@ -85,7 +97,9 @@ namespace dreamrender {
                 assert(size <= stagingSize);
             }
 
-            {
+            if(!check_state(index, task)) {
+                return false;
+            } else {
                 std::scoped_lock<std::mutex> l(lock);
                 tex->create_image(surface->w, surface->h);
             }
@@ -100,6 +114,10 @@ namespace dreamrender {
             std::get<LoaderFunction>(task.src)(decodeBuffer, stagingSize);
             allocator.copyMemoryToAllocation(decodeBuffer, allocation, 0, stagingSize);
             allocator.flushAllocation(allocation, 0, stagingSize);
+
+            if(!check_state(index, task)) {
+                return false;
+            } // no need to create the image, because it already needs to be created
         }
 
         commandBuffer.begin(vk::CommandBufferBeginInfo());
@@ -196,6 +214,10 @@ namespace dreamrender {
         std::vector<vertex_data> vertices;
         std::vector<uint32_t> indices;
         load_obj(obj, vertices, indices);
+
+        if(!check_state(index, task)) {
+            return false;
+        }
 
         model* mesh = std::get<model*>(task.dst);
         mesh->create_buffers(vertices.size(), indices.size());
