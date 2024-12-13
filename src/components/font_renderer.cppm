@@ -4,10 +4,10 @@ module;
 #include <cassert>
 #include <cmath>
 #include <future>
-#include <map>
 #include <memory>
-#include <string>
 #include <string_view>
+#include <string>
+#include <unordered_map>
 #include <vector>
 #include <version>
 
@@ -376,9 +376,10 @@ export class font_renderer {
                 glm::vec2 pos = glm::vec2(x, y)*2.0f - glm::vec2(1.0f);
 
                 TextUniform& uni = uniformPointers[frame][uniformOffsets[frame]];
-                uni.matrix = glm::mat4(1.0f);
-                uni.matrix = glm::translate(uni.matrix, glm::vec3(pos, 0.0f));
-                uni.matrix = glm::scale(uni.matrix, glm::vec3(scale / aspectRatio, scale, 1.0f));
+                glm::mat4 matrix = glm::mat4(1.0f);
+                matrix = glm::translate(matrix, glm::vec3(pos, 0.0f));
+                matrix = glm::scale(matrix, glm::vec3(scale/aspectRatio, scale, 1.0f));
+                uni.matrix = matrix;
                 uni.textureSize = {fontTexture->width/lineHeight, fontTexture->height/lineHeight};
             }
             cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, pipelines[renderPass].get());
@@ -405,7 +406,7 @@ export class font_renderer {
         std::string fontName;
         int fontSize;
 
-        std::map<char32_t, vk::Rect2D> glyphRects;
+        std::unordered_map<char32_t, vk::Rect2D> glyphRects;
         size_t maxCharacters;
         size_t maxTexts;
         float lineHeight;
