@@ -23,6 +23,7 @@ export namespace sdl {
     ALIAS_FUNCTION(BlitScaled, SDL_BlitScaled);
     ALIAS_FUNCTION(ConvertSurfaceFormat, SDL_ConvertSurfaceFormat);
     ALIAS_FUNCTION(CreateRGBSurface, SDL_CreateRGBSurface);
+    ALIAS_FUNCTION(CreateRGBSurfaceWithFormatFrom, SDL_CreateRGBSurfaceWithFormatFrom);
     ALIAS_FUNCTION(CreateWindow, SDL_CreateWindow);
     ALIAS_FUNCTION(GameControllerClose, SDL_GameControllerClose);
     ALIAS_FUNCTION(GameControllerEventState, SDL_GameControllerEventState);
@@ -123,6 +124,12 @@ export namespace sdl {
         constexpr GameControllerType NINTENDO_SWITCH_JOYCON_RIGHT = SDL_CONTROLLER_TYPE_NINTENDO_SWITCH_JOYCON_RIGHT;
         constexpr GameControllerType NINTENDO_SWITCH_JOYCON_PAIR = SDL_CONTROLLER_TYPE_NINTENDO_SWITCH_JOYCON_PAIR;
     };
+    namespace PixelFormatEnumVales {
+        constexpr PixelFormatEnum UNKNOWN = SDL_PIXELFORMAT_UNKNOWN;
+        constexpr PixelFormatEnum RGBA8888 = SDL_PIXELFORMAT_RGBA8888;
+        constexpr PixelFormatEnum ARGB8888 = SDL_PIXELFORMAT_ARGB8888;
+        constexpr PixelFormatEnum ABGR8888 = SDL_PIXELFORMAT_ABGR8888;
+    }
 
     constexpr auto enable = SDL_ENABLE;
     constexpr auto disable = SDL_DISABLE;
@@ -130,6 +137,8 @@ export namespace sdl {
     namespace image {
         ALIAS_FUNCTION(Load, IMG_Load);
         ALIAS_FUNCTION(LoadTyped_RW, IMG_LoadTyped_RW);
+        ALIAS_FUNCTION(SaveJPG, IMG_SaveJPG);
+        ALIAS_FUNCTION(SavePNG, IMG_SavePNG);
     }
 
     namespace mix {

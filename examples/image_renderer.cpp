@@ -32,7 +32,7 @@ class simple_phase : public dreamrender::phase {
             vk::AttachmentDescription attachment{{}, win->swapchainFormat.format, win->config.sampleCount,
                 vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eStore,
                 vk::AttachmentLoadOp::eDontCare, vk::AttachmentStoreOp::eDontCare,
-                vk::ImageLayout::eUndefined, vk::ImageLayout::ePresentSrcKHR};
+                vk::ImageLayout::eUndefined, win->swapchainFinalLayout};
             vk::AttachmentReference ref(0, vk::ImageLayout::eColorAttachmentOptimal);
             vk::SubpassDescription subpass({}, vk::PipelineBindPoint::eGraphics, {}, ref);
             vk::SubpassDependency dependency(vk::SubpassExternal, 0, vk::PipelineStageFlagBits::eColorAttachmentOutput, vk::PipelineStageFlagBits::eColorAttachmentOutput, {}, vk::AccessFlagBits::eColorAttachmentWrite, {});

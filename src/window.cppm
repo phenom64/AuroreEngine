@@ -88,6 +88,8 @@ export struct window_config {
     unsigned int height = -1;
     bool fullscreen = true;
     std::map<std::string, std::string> sdl_hints{};
+    bool headless = false;
+    std::filesystem::path headless_output_dir = "output";
 
     std::string name;
     int version = 1;
@@ -104,9 +106,19 @@ export struct window_config {
 export class window
 {
     public:
-        window(window_config config) : config(config) {}
-        window(window_config&& config) : config(std::move(config)) {}
+        window(window_config config) : config(config) {
+            if(std::getenv("DREAMRENDER_HEADLESS")) {
+                this->config.headless = true;
+            }
+        }
+        window(window_config&& config) : config(std::move(config)) {
+            if(std::getenv("DREAMRENDER_HEADLESS")) {
+                this->config.headless = true;
+            }
+        }
         ~window() {
+            spdlog::debug("Destroying window");
+
             std::scoped_lock lock(renderLock);
             device->waitIdle();
             {
@@ -126,13 +138,35 @@ export class window
 
             allocator.destroy();
 
-            sdl::mix::Quit();
+            if(!config.headless) {
+                sdl::mix::Quit();
+            }
         }
 
         void init() {
-            initWindow();
-            initAudio();
-            initInput();
+            if(config.headless) {
+                sdl::SetHint("SDL_NO_SIGNAL_HANDLERS", "1");
+                if(const char* c = std::getenv("DREAMRENDER_HEADLESS_OUTPUT_DIR")) {
+                    config.headless_output_dir = c;
+                }
+                if(const char* c = std::getenv("DREAMRENDER_HEADLESS_WIDTH")) {
+                    config.width = std::stoi(c);
+                }
+                if(const char* c = std::getenv("DREAMRENDER_HEADLESS_HEIGHT")) {
+                    config.height = std::stoi(c);
+                }
+                if(!config.headless_output_dir.empty() &&
+                   !std::filesystem::exists(config.headless_output_dir))
+                {
+                    std::filesystem::create_directories(config.headless_output_dir);
+                }
+            }
+            static sdl::initializer sdl_init;
+            if(!config.headless) {
+                initWindow();
+                initAudio();
+                initInput();
+            }
             initVulkan();
         }
         void loop() {
@@ -144,75 +178,77 @@ export class window
             int currentFrame = 0;
             vk::Result r;
             for(;;) {
-                sdl::Event event;
-                while(sdl::PollEvent(&event)) {
-                    switch(event.type) {
-                        case sdl::EventType::SDL_QUIT:
-                            return;
-                        case sdl::EventType::SDL_KEYDOWN:
-                            if(keyboard_handler)
-                                keyboard_handler->key_down(event.key.keysym);
-                            break;
-                        case sdl::EventType::SDL_KEYUP:
-                            if(keyboard_handler)
-                                keyboard_handler->key_up(event.key.keysym);
-                            break;
-                        case sdl::EventType::SDL_CONTROLLERBUTTONDOWN:
-                            if(controller_handler)
-                                controller_handler->button_down(controllers[event.cbutton.which].get(),
-                                    static_cast<sdl::GameControllerButton>(event.cbutton.button)
-                                );
-                            break;
-                        case sdl::EventType::SDL_CONTROLLERBUTTONUP:
-                            if(controller_handler)
-                                controller_handler->button_up(controllers[event.cbutton.which].get(),
-                                    static_cast<sdl::GameControllerButton>(event.cbutton.button)
-                                );
-                            break;
-                        case sdl::EventType::SDL_CONTROLLERAXISMOTION:
-                            if(controller_handler)
-                                controller_handler->axis_motion(controllers[event.caxis.which].get(),
-                                    static_cast<sdl::GameControllerAxis>(event.caxis.axis),
-                                    event.caxis.value
-                                );
-                            break;
-                        case sdl::EventType::SDL_CONTROLLERDEVICEADDED:
-                            if(sdl::IsGameController(event.cdevice.which)) {
-                                auto controller = sdl::GameControllerOpen(event.cdevice.which);
-                                if(controller) {
-                                    sdl::JoystickID id = sdl::JoystickInstanceID(sdl::GameControllerGetJoystick(controller));
-                                    controllers[id] = std::unique_ptr<sdl::GameController, sdl_controller_closer>(controller);
-                                    spdlog::debug("Connected controller \"{}\" with id {}", sdl::GameControllerName(controller), id);
-                                    if(controller_handler)
-                                        controller_handler->add_controller(controller);
-                                } else {
-                                    spdlog::warn("Failed to open controller {}: {}", event.cdevice.which, sdl::GetError());
+                if(!config.headless) {
+                    sdl::Event event;
+                    while(sdl::PollEvent(&event)) {
+                        switch(event.type) {
+                            case sdl::EventType::SDL_QUIT:
+                                return;
+                            case sdl::EventType::SDL_KEYDOWN:
+                                if(keyboard_handler)
+                                    keyboard_handler->key_down(event.key.keysym);
+                                break;
+                            case sdl::EventType::SDL_KEYUP:
+                                if(keyboard_handler)
+                                    keyboard_handler->key_up(event.key.keysym);
+                                break;
+                            case sdl::EventType::SDL_CONTROLLERBUTTONDOWN:
+                                if(controller_handler)
+                                    controller_handler->button_down(controllers[event.cbutton.which].get(),
+                                        static_cast<sdl::GameControllerButton>(event.cbutton.button)
+                                    );
+                                break;
+                            case sdl::EventType::SDL_CONTROLLERBUTTONUP:
+                                if(controller_handler)
+                                    controller_handler->button_up(controllers[event.cbutton.which].get(),
+                                        static_cast<sdl::GameControllerButton>(event.cbutton.button)
+                                    );
+                                break;
+                            case sdl::EventType::SDL_CONTROLLERAXISMOTION:
+                                if(controller_handler)
+                                    controller_handler->axis_motion(controllers[event.caxis.which].get(),
+                                        static_cast<sdl::GameControllerAxis>(event.caxis.axis),
+                                        event.caxis.value
+                                    );
+                                break;
+                            case sdl::EventType::SDL_CONTROLLERDEVICEADDED:
+                                if(sdl::IsGameController(event.cdevice.which)) {
+                                    auto controller = sdl::GameControllerOpen(event.cdevice.which);
+                                    if(controller) {
+                                        sdl::JoystickID id = sdl::JoystickInstanceID(sdl::GameControllerGetJoystick(controller));
+                                        controllers[id] = std::unique_ptr<sdl::GameController, sdl_controller_closer>(controller);
+                                        spdlog::debug("Connected controller \"{}\" with id {}", sdl::GameControllerName(controller), id);
+                                        if(controller_handler)
+                                            controller_handler->add_controller(controller);
+                                    } else {
+                                        spdlog::warn("Failed to open controller {}: {}", event.cdevice.which, sdl::GetError());
+                                    }
                                 }
-                            }
-                            break;
-                        case sdl::EventType::SDL_CONTROLLERDEVICEREMOVED:
-                            if(controller_handler)
-                                controller_handler->remove_controller(controllers[event.cdevice.which].get());
-                            if(controllers.contains(event.cdevice.which)) {
-                                spdlog::debug("Disconnected controller \"{}\" with id {}", sdl::GameControllerName(controllers[event.cdevice.which].get()), event.cdevice.which);
-                                controllers.erase(event.cdevice.which);
-                            }
+                                break;
+                            case sdl::EventType::SDL_CONTROLLERDEVICEREMOVED:
+                                if(controller_handler)
+                                    controller_handler->remove_controller(controllers[event.cdevice.which].get());
+                                if(controllers.contains(event.cdevice.which)) {
+                                    spdlog::debug("Disconnected controller \"{}\" with id {}", sdl::GameControllerName(controllers[event.cdevice.which].get()), event.cdevice.which);
+                                    controllers.erase(event.cdevice.which);
+                                }
+                        }
                     }
-                }
 
-                auto now = std::chrono::high_resolution_clock::now();
-                auto dt = std::chrono::duration<double>(now - lastFrame).count();
-                lastFrame = now;
+                    auto now = std::chrono::high_resolution_clock::now();
+                    auto dt = std::chrono::duration<double>(now - lastFrame).count();
+                    lastFrame = now;
 
-                using vk::PresentModeKHR::eFifo;
-                using vk::PresentModeKHR::eFifoRelaxed;
-                if(config.fpsLimit > 0 && (config.fpsLimit < refreshRate ||
-                    ~(swapchainPresentMode == eFifo || swapchainPresentMode == eFifoRelaxed)))
-                {
-                    auto frame_time = std::chrono::duration<double>(std::chrono::seconds(1)) / config.fpsLimit;
-                    auto sleep = frame_time - std::chrono::duration<double>(now - lastFrame);
-                    if(sleep > frame_time / 10) {
-                        std::this_thread::sleep_for(sleep);
+                    using vk::PresentModeKHR::eFifo;
+                    using vk::PresentModeKHR::eFifoRelaxed;
+                    if(config.fpsLimit > 0 && (config.fpsLimit < refreshRate ||
+                        ~(swapchainPresentMode == eFifo || swapchainPresentMode == eFifoRelaxed)))
+                    {
+                        auto frame_time = std::chrono::duration<double>(std::chrono::seconds(1)) / config.fpsLimit;
+                        auto sleep = frame_time - std::chrono::duration<double>(now - lastFrame);
+                        if(sleep > frame_time / 10) {
+                            std::this_thread::sleep_for(sleep);
+                        }
                     }
                 }
 
@@ -221,11 +257,46 @@ export class window
                 if(r != vk::Result::eSuccess)
                     spdlog::error("Waiting for inFlightFences[{}] failed with result {}", currentFrame, vk::to_string(r));
 
-                auto [result, imageIndex] = device->acquireNextImageKHR(swapchain.get(), UINT64_MAX, imageAvailableSemaphores[currentFrame].get());
-                if(imagesInFlight[imageIndex]) {
-                    r = device->waitForFences(imagesInFlight[imageIndex], true, UINT64_MAX);
-                    if(r != vk::Result::eSuccess)
-                        spdlog::error("Waiting for imagesInFlight[{}] failed with result {}", imageIndex, vk::to_string(r));
+                unsigned int imageIndex = 0;
+                if(config.headless) {
+                    // This is incredibly weird and hacky, but by some miracle it works.
+                    imageIndex = (currentFrame)%swapchainImageCount;
+
+                    if(imagesInFlight[imageIndex]) {
+                        r = device->waitForFences({imagesInFlight[imageIndex], headlessFences[imageIndex].get()}, true, UINT64_MAX);
+                        if(r != vk::Result::eSuccess)
+                            spdlog::error("Waiting for imagesInFlight[{0}] and headlessFences[{0}] failed with result {1}", imageIndex, vk::to_string(r));
+
+                        if(!config.headless_output_dir.empty()) {
+                            std::vector<char> data(swapchainExtent.width*swapchainExtent.height*4);
+                            r = allocator.copyAllocationToMemory(headlessOutputAllocations[imageIndex].get(),
+                                0, data.data(), swapchainExtent.width*swapchainExtent.height*4);
+                            if(r != vk::Result::eSuccess)
+                                spdlog::error("Copying headlessOutputAllocations[{}] to memory failed with result {}", imageIndex, vk::to_string(r));
+
+                            sdl::unique_surface surface{sdl::CreateRGBSurfaceWithFormatFrom(data.data(),
+                                swapchainExtent.width, swapchainExtent.height, 32, swapchainExtent.width*4,
+                                sdl::PixelFormatEnumVales::ABGR8888)};
+                            std::filesystem::path path = config.headless_output_dir / std::format("{}.png", totalFrameNumber);
+                            sdl::image::SaveJPG(surface.get(), path.c_str(), 100);
+                        }
+                    }
+
+                    // We need this just to signal the semaphore. THIS IS BAD. Oh well...
+                    vk::CommandBuffer& commandBuffer = headlessCommandBuffersPre[imageIndex];
+                    commandBuffer.begin(vk::CommandBufferBeginInfo());
+                    commandBuffer.end();
+
+                    vk::PipelineStageFlags waitStages = vk::PipelineStageFlagBits::eColorAttachmentOutput;
+                    vk::SubmitInfo submitInfo(0, {}, {}, 1, &commandBuffer, 1, &imageAvailableSemaphores[currentFrame].get());
+                    graphicsQueue.submit(submitInfo, {}); // no fence here, we just don't give a shit anymore
+                } else {
+                    std::tie(r, imageIndex) = device->acquireNextImageKHR(swapchain.get(), UINT64_MAX, imageAvailableSemaphores[currentFrame].get());
+                    if(imagesInFlight[imageIndex]) {
+                        r = device->waitForFences(imagesInFlight[imageIndex], true, UINT64_MAX);
+                        if(r != vk::Result::eSuccess)
+                            spdlog::error("Waiting for imagesInFlight[{}] failed with result {}", imageIndex, vk::to_string(r));
+                    }
                 }
                 imagesInFlight[imageIndex] = inFlightFences[currentFrame];
 
@@ -235,17 +306,35 @@ export class window
                     throw std::runtime_error("No renderer set!");
                 current_renderer->render(imageIndex, imageAvailableSemaphores[currentFrame].get(), renderFinishedSemaphores[currentFrame].get(), inFlightFences[currentFrame]);
 
-                vk::PresentInfoKHR present_info(renderFinishedSemaphores[currentFrame].get(), swapchain.get(), imageIndex);
-                r = presentQueue.presentKHR(present_info);
-                if(r == vk::Result::eSuboptimalKHR) {
-                    spdlog::debug("Suboptiomal present result; recreating swapchain");
-                    recreateSwapchain();
-                } else if(r != vk::Result::eSuccess) {
-                    spdlog::error("Present failed with result {}", vk::to_string(r));
+                if(config.headless) {
+                    device->resetFences(headlessFences[imageIndex].get());
+
+                    vk::CommandBuffer& commandBuffer = headlessCommandBuffersPost[imageIndex];
+                    commandBuffer.begin(vk::CommandBufferBeginInfo());
+                    commandBuffer.copyImageToBuffer(headlessTextures[imageIndex].image, vk::ImageLayout::eTransferSrcOptimal,
+                        headlessOutputBuffers[imageIndex].get(),
+                        vk::BufferImageCopy(0, 0, 0, vk::ImageSubresourceLayers(vk::ImageAspectFlagBits::eColor, 0, 0, 1),
+                            vk::Offset3D(0, 0, 0),
+                            vk::Extent3D(swapchainExtent, 1)));
+                    commandBuffer.end();
+
+                    vk::PipelineStageFlags waitStages = vk::PipelineStageFlagBits::eColorAttachmentOutput;
+                    vk::SubmitInfo submitInfo(1, &renderFinishedSemaphores[currentFrame].get(), &waitStages, 1, &commandBuffer, 0, {});
+                    graphicsQueue.submit(submitInfo, headlessFences[imageIndex].get()); // we need this fence, or everything explodes
+                } else {
+                    vk::PresentInfoKHR present_info(renderFinishedSemaphores[currentFrame].get(), swapchain.get(), imageIndex);
+                    r = presentQueue.presentKHR(present_info);
+                    if(r == vk::Result::eSuboptimalKHR) {
+                        spdlog::debug("Suboptiomal present result; recreating swapchain");
+                        recreateSwapchain();
+                    } else if(r != vk::Result::eSuccess) {
+                        spdlog::error("Present failed with result {}", vk::to_string(r));
+                    }
                 }
 
                 currentFrame = (currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
 
+                totalFrameNumber++;
                 framesInSecond++;
                 auto t = std::chrono::high_resolution_clock::now();
                 using namespace std::chrono_literals;
@@ -350,7 +439,6 @@ export class window
         input::keyboard_handler* keyboard_handler;
         input::controller_handler* controller_handler;
 
-        static sdl::initializer sdl_init;
         sdl::unique_window win;
         uint32_t window_width, window_height;
 
@@ -375,10 +463,19 @@ export class window
         vk::Extent2D swapchainExtent;
         uint32_t swapchainImageCount;
         vk::UniqueSwapchainKHR swapchain;
+        vk::ImageLayout swapchainFinalLayout = vk::ImageLayout::ePresentSrcKHR;
 
         std::vector<vk::Image> swapchainImages;
         std::vector<vk::UniqueImageView> swapchainImageViews;
         std::vector<vk::ImageView> swapchainImageViewsRaw;
+
+        std::vector<texture> headlessTextures;
+        vk::UniqueCommandPool headlessCommandPool;
+        std::vector<vk::CommandBuffer> headlessCommandBuffersPre;
+        std::vector<vk::CommandBuffer> headlessCommandBuffersPost;
+        std::vector<vma::UniqueBuffer> headlessOutputBuffers;
+        std::vector<vma::UniqueAllocation> headlessOutputAllocations;
+        std::vector<vk::UniqueFence> headlessFences;
 
         const int MAX_FRAMES_IN_FLIGHT = 2;
         std::vector<vk::UniqueSemaphore> imageAvailableSemaphores;
@@ -393,6 +490,7 @@ export class window
         decltype(std::chrono::high_resolution_clock::now()) startTime;
         decltype(std::chrono::high_resolution_clock::now()) lastFrame;
 
+        uint64_t totalFrameNumber{};
         static constexpr int fpsSampleRate = 5;
         uint64_t framesInSecond{};
         decltype(std::chrono::high_resolution_clock::now()) lastFPS;
@@ -465,7 +563,7 @@ export class window
         void initVulkan() {
             std::scoped_lock lock(renderLock);
 
-            vk::DynamicLoader dl;
+            static vk::DynamicLoader dl;
             PFN_vkGetInstanceProcAddr vkGetInstanceProcAddr = dl.getProcAddress<PFN_vkGetInstanceProcAddr>("vkGetInstanceProcAddr");
             VULKAN_HPP_DEFAULT_DISPATCHER.init(vkGetInstanceProcAddr);
 
@@ -481,12 +579,14 @@ export class window
                 vk::KHRGetPhysicalDeviceProperties2ExtensionName,
             };
 
-            uint32_t sdlExtensionCount = 0;
-            sdl::vk::GetInstanceExtensions(win.get(), &sdlExtensionCount, nullptr);
+            if(!config.headless) {
+                uint32_t sdlExtensionCount = 0;
+                sdl::vk::GetInstanceExtensions(win.get(), &sdlExtensionCount, nullptr);
 
-            std::vector<const char*> sdlExtensions(sdlExtensionCount);
-            sdl::vk::GetInstanceExtensions(win.get(), &sdlExtensionCount, sdlExtensions.data());
-            std::copy(sdlExtensions.begin(), sdlExtensions.end(), std::back_inserter(extensions));
+                std::vector<const char*> sdlExtensions(sdlExtensionCount);
+                sdl::vk::GetInstanceExtensions(win.get(), &sdlExtensionCount, sdlExtensions.data());
+                std::copy(sdlExtensions.begin(), sdlExtensions.end(), std::back_inserter(extensions));
+            }
 
             spdlog::debug("Using extensions: {}", fmt::join(extensions, ", "));
 
@@ -511,7 +611,7 @@ export class window
     #endif
             spdlog::info("Initialized Vulkan with {} layer(s) and {} extension(s)", layers.size(), extensions.size());
 
-            {
+            if(!config.headless) {
                 VkSurfaceKHR surface_;
                 sdl::vk::CreateSurface(win.get(), instance.get(), &surface_);
                 vk::ObjectDestroy<vk::Instance, vk::DispatchLoaderDynamic> deleter(instance.get(), nullptr, instance.getDispatch());
@@ -582,7 +682,7 @@ export class window
 
             deviceProperties = physicalDevice.getProperties();
             queueFamilyIndices = findQueueFamilies(physicalDevice);
-            swapchainSupport = querySwapChainSupport(physicalDevice);
+            if(!config.headless) swapchainSupport = querySwapChainSupport(physicalDevice);
             spdlog::info("Using video device {} of type {}", deviceProperties.deviceName, vk::to_string(deviceProperties.deviceType));
 
             vk::SampleCountFlags supportedSamples = deviceProperties.limits.framebufferColorSampleCounts;
@@ -648,11 +748,13 @@ export class window
                 .setFeatures(features)
                 .setPNext(&indexingFeatures);
 
-            const std::vector<const char*> deviceExtensions = {
-                VK_KHR_SWAPCHAIN_EXTENSION_NAME,
+            std::vector<const char*> deviceExtensions = {
                 VK_EXT_DESCRIPTOR_INDEXING_EXTENSION_NAME,
                 VK_KHR_MAINTENANCE3_EXTENSION_NAME,
             };
+            if(!config.headless) {
+                deviceExtensions.push_back(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
+            }
             vk::DeviceCreateInfo device_info = vk::DeviceCreateInfo()
                 .setQueueCreateInfos(queueInfos)
                 .setPEnabledLayerNames(layers)
@@ -687,30 +789,66 @@ export class window
                 queueFamilyIndices.graphicsFamily.value(),
                 transferQueues);
 
-            auto formatIt = std::find_if(swapchainSupport.formats.begin(), swapchainSupport.formats.end(), [](auto f){
-                return f.format == vk::Format::eB8G8R8A8Srgb && f.colorSpace == vk::ColorSpaceKHR::eSrgbNonlinear;
-            });
-            swapchainFormat = formatIt == swapchainSupport.formats.end() ? swapchainSupport.formats[0] : *formatIt;
-            if(spdlog::should_log(spdlog::level::debug))
-            {
-                auto props = physicalDevice.getFormatProperties(swapchainFormat.format);
-                spdlog::debug("Swapchain format: {}, color space: {}, linear tiling features: {}, optimal tiling features: {}, buffer features: {}",
-                    vk::to_string(swapchainFormat.format), vk::to_string(swapchainFormat.colorSpace),
-                    vk::to_string(props.linearTilingFeatures), vk::to_string(props.optimalTilingFeatures),
-                    vk::to_string(props.bufferFeatures));
+            if(config.headless) {
+                swapchainFormat = vk::SurfaceFormatKHR{vk::Format::eR8G8B8A8Srgb, vk::ColorSpaceKHR::eSrgbNonlinear};
+                swapchainExtent = vk::Extent2D{config.width, config.height};
+                swapchainImageCount = MAX_FRAMES_IN_FLIGHT;
+                swapchainPresentMode = vk::PresentModeKHR::eImmediate;
+                swapchainFinalLayout = vk::ImageLayout::eTransferSrcOptimal;
+
+                swapchainImages.clear();
+                swapchainImageViews.clear();
+                swapchainImageViewsRaw.clear();
+                for(unsigned int i=0; i<swapchainImageCount; i++) {
+                    headlessTextures.push_back(texture{device.get(), allocator,
+                        static_cast<int>(swapchainExtent.width), static_cast<int>(swapchainExtent.height),
+                        vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eTransferSrc,
+                        swapchainFormat.format, config.sampleCount});
+                    swapchainImages.push_back(headlessTextures.back().image);
+                    vk::ImageViewCreateInfo view_info({}, swapchainImages.back(), vk::ImageViewType::e2D, swapchainFormat.format,
+                        vk::ComponentMapping{}, vk::ImageSubresourceRange(vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1));
+                    swapchainImageViews.push_back(device->createImageViewUnique(view_info));
+                    swapchainImageViewsRaw.push_back(swapchainImageViews.back().get());
+
+                    vk::BufferCreateInfo buffer_info({}, swapchainExtent.width*swapchainExtent.height*4, vk::BufferUsageFlagBits::eTransferDst);
+                    vma::AllocationCreateInfo alloc_info({}, vma::MemoryUsage::eGpuToCpu);
+                    auto [buf, alloc] = allocator.createBufferUnique(buffer_info, alloc_info);
+                    headlessOutputBuffers.push_back(std::move(buf));
+                    headlessOutputAllocations.push_back(std::move(alloc));
+
+                    headlessFences.push_back(device->createFenceUnique(vk::FenceCreateInfo()));
+                }
+
+                vk::CommandPoolCreateInfo pool_info({}, queueFamilyIndices.graphicsFamily.value());
+                headlessCommandPool = device->createCommandPoolUnique(vk::CommandPoolCreateInfo(vk::CommandPoolCreateFlagBits::eResetCommandBuffer, queueFamilyIndices.graphicsFamily.value()));
+                headlessCommandBuffersPre = device->allocateCommandBuffers(vk::CommandBufferAllocateInfo(headlessCommandPool.get(), vk::CommandBufferLevel::ePrimary, swapchainImageCount));
+                headlessCommandBuffersPost = device->allocateCommandBuffers(vk::CommandBufferAllocateInfo(headlessCommandPool.get(), vk::CommandBufferLevel::ePrimary, swapchainImageCount));
+            } else {
+                auto formatIt = std::find_if(swapchainSupport.formats.begin(), swapchainSupport.formats.end(), [](auto f){
+                    return f.format == vk::Format::eB8G8R8A8Srgb && f.colorSpace == vk::ColorSpaceKHR::eSrgbNonlinear;
+                });
+                swapchainFormat = formatIt == swapchainSupport.formats.end() ? swapchainSupport.formats[0] : *formatIt;
+                if(spdlog::should_log(spdlog::level::debug))
+                {
+                    auto props = physicalDevice.getFormatProperties(swapchainFormat.format);
+                    spdlog::debug("Swapchain format: {}, color space: {}, linear tiling features: {}, optimal tiling features: {}, buffer features: {}",
+                        vk::to_string(swapchainFormat.format), vk::to_string(swapchainFormat.colorSpace),
+                        vk::to_string(props.linearTilingFeatures), vk::to_string(props.optimalTilingFeatures),
+                        vk::to_string(props.bufferFeatures));
+                }
+
+                swapchainExtent = vk::Extent2D{
+                    std::clamp(window_width, swapchainSupport.capabilities.minImageExtent.width, swapchainSupport.capabilities.maxImageExtent.width),
+                    std::clamp(window_height, swapchainSupport.capabilities.minImageExtent.height, swapchainSupport.capabilities.maxImageExtent.height)
+                };
+
+                swapchainImageCount = swapchainSupport.capabilities.minImageCount + 1;
+                if(swapchainSupport.capabilities.maxImageCount > 0) {
+                    swapchainImageCount = std::min(swapchainImageCount, swapchainSupport.capabilities.maxImageCount);
+                }
+
+                recreateSwapchain(false);
             }
-
-            swapchainExtent = vk::Extent2D{
-                std::clamp(window_width, swapchainSupport.capabilities.minImageExtent.width, swapchainSupport.capabilities.maxImageExtent.width),
-                std::clamp(window_height, swapchainSupport.capabilities.minImageExtent.height, swapchainSupport.capabilities.maxImageExtent.height)
-            };
-
-            swapchainImageCount = swapchainSupport.capabilities.minImageCount + 1;
-            if(swapchainSupport.capabilities.maxImageCount > 0) {
-                swapchainImageCount = std::min(swapchainImageCount, swapchainSupport.capabilities.maxImageCount);
-            }
-
-            recreateSwapchain(false);
 
             for(auto& image : swapchainImages)
             {
@@ -779,9 +917,12 @@ export class window
                     indices.graphicsFamily = index;
                 else if(family.queueFlags & vk::QueueFlagBits::eTransfer)
                     indices.transferFamily = index;
-                if(phyDev.getSurfaceSupportKHR(index, surface.get()))
+                if(!config.headless && phyDev.getSurfaceSupportKHR(index, surface.get()))
                     indices.presentFamily = index;
                 index++;
+            }
+            if(config.headless) {
+                indices.presentFamily = indices.graphicsFamily;
             }
 
             return indices;
@@ -796,5 +937,4 @@ export class window
         }
 };
 
-sdl::initializer window::sdl_init{};
 }
