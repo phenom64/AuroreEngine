@@ -16,6 +16,7 @@ export module dreamrender:resource_loader;
 
 import :texture;
 import :model;
+import :utils;
 
 import spdlog;
 import vulkan_hpp;
@@ -51,6 +52,8 @@ struct LoadTask
     std::variant<std::filesystem::path, LoaderFunction, LoadDataView> src;
     std::variant<texture*, model*, vk::Image, vk::Buffer> dst;
     std::promise<void> promise;
+
+    std::shared_ptr<std::atomic<loading_state>> state = {};
 
     std::string source_name() const;
 };
@@ -95,7 +98,13 @@ export class resource_loader
             std::future<void> f;
             {
                 std::scoped_lock<std::mutex> l(lock);
-                tasks.push(LoadTask{.type = LoadType::Texture, .src = path, .dst = texture, .promise = std::promise<void>()});
+
+                loading_state state = loading_state::none;
+                if(!texture->state->compare_exchange_strong(state, loading_state::queued)) {
+                    throw std::runtime_error("Texture is in invalid state");
+                }
+
+                tasks.push(LoadTask{.type = LoadType::Texture, .src = path, .dst = texture, .promise = std::promise<void>(), .state = texture->state});
                 f = tasks.back().promise.get_future();
             }
             cv.notify_one();
@@ -105,7 +114,13 @@ export class resource_loader
             std::future<void> f;
             {
                 std::scoped_lock<std::mutex> l(lock);
-                tasks.push(LoadTask{.type = LoadType::Texture, .src = std::move(loader), .dst = texture, .promise = std::promise<void>()});
+
+                loading_state state = loading_state::none;
+                if(!texture->state->compare_exchange_strong(state, loading_state::queued)) {
+                    throw std::runtime_error("Texture is in invalid state");
+                }
+
+                tasks.push(LoadTask{.type = LoadType::Texture, .src = std::move(loader), .dst = texture, .promise = std::promise<void>(), .state = texture->state});
                 f = tasks.back().promise.get_future();
             }
             cv.notify_one();
@@ -115,7 +130,13 @@ export class resource_loader
             std::future<void> f;
             {
                 std::scoped_lock<std::mutex> l(lock);
-                tasks.push(LoadTask{.type = LoadType::Texture, .src = data, .dst = texture, .promise = std::promise<void>()});
+
+                loading_state state = loading_state::none;
+                if(!texture->state->compare_exchange_strong(state, loading_state::queued)) {
+                    throw std::runtime_error("Texture is in invalid state");
+                }
+
+                tasks.push(LoadTask{.type = LoadType::Texture, .src = data, .dst = texture, .promise = std::promise<void>(), .state = texture->state});
                 f = tasks.back().promise.get_future();
             }
             cv.notify_one();
@@ -126,7 +147,13 @@ export class resource_loader
             std::future<void> f;
             {
                 std::scoped_lock<std::mutex> l(lock);
-                tasks.push(LoadTask{.type = LoadType::Model, .src = filename, .dst = model, .promise = std::promise<void>()});
+
+                loading_state state = loading_state::none;
+                if(!model->state->compare_exchange_strong(state, loading_state::queued)) {
+                    throw std::runtime_error("Model is in invalid state");
+                }
+
+                tasks.push(LoadTask{.type = LoadType::Model, .src = filename, .dst = model, .promise = std::promise<void>(), .state = model->state});
                 f = tasks.back().promise.get_future();
             }
             cv.notify_one();
@@ -136,7 +163,13 @@ export class resource_loader
             std::future<void> f;
             {
                 std::scoped_lock<std::mutex> l(lock);
-                tasks.push(LoadTask{.type = LoadType::Model, .src = data, .dst = model, .promise = std::promise<void>()});
+
+                loading_state state = loading_state::none;
+                if(!model->state->compare_exchange_strong(state, loading_state::queued)) {
+                    throw std::runtime_error("Model is in invalid state");
+                }
+
+                tasks.push(LoadTask{.type = LoadType::Model, .src = data, .dst = model, .promise = std::promise<void>(), .state = model->state});
                 f = tasks.back().promise.get_future();
             }
             cv.notify_one();
@@ -194,6 +227,13 @@ export class resource_loader
                     tasks.pop();
                     l.unlock();
 
+                    if(task.state->load() != loading_state::queued) {
+                        spdlog::debug("[Resource Loader {}] Task {} is already destroyed", index, task.source_name());
+                        task.promise.set_value();
+                        l.lock();
+                        continue;
+                    }
+
                     spdlog::debug("[Resource Loader {}] Loading {}", index,
                         std::holds_alternative<std::filesystem::path>(task.src) ? std::get<std::filesystem::path>(task.src).string() : "dynamic resource");
                     auto t0 = std::chrono::high_resolution_clock::now();
@@ -225,6 +265,10 @@ export class resource_loader
                             else if(std::holds_alternative<model*>(task.dst))
                                 std::get<model*>(task.dst)->loaded = true;
                         }
+
+                        task.state->store(loading_state::loaded);
+                        task.state->notify_all();
+
                         task.promise.set_value();
                     }
                     auto t1 = std::chrono::high_resolution_clock::now();

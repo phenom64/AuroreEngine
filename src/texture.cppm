@@ -1,14 +1,19 @@
 module;
 
+#include <atomic>
 #include <cstdint>
+#include <memory>
 #include <string>
 
 export module dreamrender:texture;
 
 import :debug;
+import :utils;
 
 import vulkan_hpp;
 import vma;
+
+import spdlog;
 
 namespace dreamrender {
 
@@ -70,6 +75,12 @@ export struct texture
     }
 
     ~texture() {
+        loading_state s = state->exchange(loading_state::destroyed);
+        if(s == loading_state::loading) {
+            spdlog::debug("Waiting for texture upload to complate");
+            while(state->load() != loading_state::loaded) {}
+        }
+
         imageView.reset();
         if(image && allocation) {
             allocator.destroyImage(image, allocation);
@@ -113,6 +124,9 @@ export struct texture
     private:
     vk::ImageCreateInfo image_info;
     vk::ImageViewCreateInfo view_info;
+
+    std::shared_ptr<std::atomic<loading_state>> state = std::make_shared<std::atomic<loading_state>>(loading_state::none);
+    friend class resource_loader;
 };
 
 }

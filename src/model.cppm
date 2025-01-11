@@ -1,15 +1,19 @@
 module;
 
 #include <array>
+#include <atomic>
 #include <cstdint>
 #include <cstddef>
 #include <limits>
+#include <memory>
 
 export module dreamrender:model;
 
 import glm;
 import vulkan_hpp;
 import vma;
+
+import :utils;
 
 namespace dreamrender {
 
@@ -66,6 +70,10 @@ export struct model
 
     glm::vec3 min = glm::vec3(std::numeric_limits<float>::max());
     glm::vec3 max = glm::vec3(std::numeric_limits<float>::lowest());
+
+    private:
+        std::shared_ptr<std::atomic<loading_state>> state = std::make_shared<std::atomic<loading_state>>(loading_state::none);
+        friend class resource_loader;
 };
 
 }

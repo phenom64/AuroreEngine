@@ -94,6 +94,14 @@ export UniquePipelineMap createPipelines(
     return pipelines;
 }
 
+export enum class loading_state {
+    none,
+    queued,
+    loading,
+    loaded,
+    destroyed
+};
+
 export template<typename T>
 class aligned_wrapper {
     public:
