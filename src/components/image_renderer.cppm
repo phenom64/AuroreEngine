@@ -19,12 +19,20 @@ struct push_constants {
     unsigned int index;
 };
 
+constexpr bool check_features(const gpu_features& features) {
+    if(!features.indexingFeatures.descriptorBindingPartiallyBound)
+        return false;
+    if(!features.indexingFeatures.descriptorBindingSampledImageUpdateAfterBind)
+        return false;
+    return true;
+}
+
 export class image_renderer {
     public:
         constexpr static unsigned int default_max_images = 512;
 
-        image_renderer(vk::Device device, vk::Extent2D frameSize) : device(device), frameSize(frameSize),
-            aspectRatio(static_cast<double>(frameSize.width)/frameSize.height) {}
+        image_renderer(vk::Device device, vk::Extent2D frameSize, const gpu_features& features) : device(device), frameSize(frameSize),
+            aspectRatio(static_cast<double>(frameSize.width)/frameSize.height), compat_mode(!check_features(features)) {}
         ~image_renderer() = default;
 
         void preload(const std::vector<vk::RenderPass>& renderPasses, vk::SampleCountFlagBits sampleCount,
@@ -42,9 +50,11 @@ export class image_renderer {
                     vk::DescriptorSetLayoutBinding(0, vk::DescriptorType::eCombinedImageSampler, max_images, vk::ShaderStageFlagBits::eFragment)
                 };
                 vk::DescriptorBindingFlags flags = vk::DescriptorBindingFlagBits::eUpdateAfterBind | vk::DescriptorBindingFlagBits::ePartiallyBound;
+                if(compat_mode)
+                    flags = vk::DescriptorBindingFlags{};
                 vk::DescriptorSetLayoutBindingFlagsCreateInfo bindingInfo(flags);
                 vk::DescriptorSetLayoutCreateInfo layout_info(
-                    vk::DescriptorSetLayoutCreateFlagBits::eUpdateAfterBindPool,
+                    compat_mode ? vk::DescriptorSetLayoutCreateFlagBits{} : vk::DescriptorSetLayoutCreateFlagBits::eUpdateAfterBindPool,
                     bindings, &bindingInfo);
                 descriptorLayout = device.createDescriptorSetLayoutUnique(layout_info);
                 debugName(device, descriptorLayout.get(), "Image Renderer Descriptor Layout");
@@ -109,6 +119,11 @@ export class image_renderer {
         }
 
         void finish(int frame) {
+            if(compat_mode) {
+                imageInfos[frame].clear();
+                return;
+            }
+
             if(imageInfos[frame].empty())
                 return;
             vk::WriteDescriptorSet write(
@@ -124,6 +139,12 @@ export class image_renderer {
             vk::DescriptorImageInfo image_info(sampler.get(), view, vk::ImageLayout::eShaderReadOnlyOptimal);
             int index = imageInfos[frame].size();
             imageInfos[frame].push_back(image_info);
+            if(compat_mode) {
+                vk::WriteDescriptorSet write(
+                    descriptorSets[frame], 0, index,
+                    1, vk::DescriptorType::eCombinedImageSampler, &image_info);
+                device.updateDescriptorSets(write, {});
+            }
 
             cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, pipelines[renderPass].get());
             cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, pipelineLayout.get(), 0, descriptorSets[frame], {});
@@ -152,6 +173,12 @@ export class image_renderer {
             vk::DescriptorImageInfo image_info(sampler.get(), view, vk::ImageLayout::eShaderReadOnlyOptimal);
             int index = imageInfos[frame].size();
             imageInfos[frame].push_back(image_info);
+            if(compat_mode) {
+                vk::WriteDescriptorSet write(
+                    descriptorSets[frame], 0, index,
+                    1, vk::DescriptorType::eCombinedImageSampler, &image_info);
+                device.updateDescriptorSets(write, {});
+            }
 
             cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, pipelines[renderPass].get());
             cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, pipelineLayout.get(), 0, descriptorSets[frame], {});
@@ -180,6 +207,7 @@ export class image_renderer {
         vk::Device device;
         vk::Extent2D frameSize;
         double aspectRatio;
+        bool compat_mode;
 
         unsigned int max_images;
 

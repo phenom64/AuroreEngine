@@ -41,6 +41,11 @@ namespace {
     static_assert(convert<test_array2, uint16_t>() == test_array2);
 }
 
+export struct gpu_features {
+    vk::PhysicalDeviceFeatures features;
+    vk::PhysicalDeviceDescriptorIndexingFeatures indexingFeatures;
+};
+
 export vk::UniqueShaderModule createShader(vk::Device device, std::span<const uint32_t> code) {
     vk::ShaderModuleCreateInfo shader_info({}, code.size()*sizeof(decltype(code)::element_type), code.data());
     vk::UniqueShaderModule shader = device.createShaderModuleUnique(shader_info);

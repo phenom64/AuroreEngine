@@ -450,6 +450,7 @@ export class window
         vk::PhysicalDeviceProperties deviceProperties;
         QueueFamilyIndices queueFamilyIndices;
         SwapChainSupportDetails swapchainSupport;
+        gpu_features gpuFeatures;
 
         vk::UniqueDevice device;
         vma::Allocator allocator;
@@ -735,23 +736,33 @@ export class window
                     .setPQueuePriorities(priorities.data());
             }
 
+            auto featureChain = physicalDevice.getFeatures2<vk::PhysicalDeviceFeatures2, vk::PhysicalDeviceDescriptorIndexingFeatures>();
+            auto supportedFeatures = featureChain.get<vk::PhysicalDeviceFeatures2>().features;
+            auto supportedIndexingFeatures = featureChain.get<vk::PhysicalDeviceDescriptorIndexingFeatures>();
+            if(std::getenv("DREAMRENDER_NO_FEATURES")) {
+                spdlog::warn("Disabling all device features");
+                supportedFeatures = vk::PhysicalDeviceFeatures();
+                supportedIndexingFeatures = vk::PhysicalDeviceDescriptorIndexingFeatures();
+            }
             vk::PhysicalDeviceFeatures features = vk::PhysicalDeviceFeatures()
-                .setGeometryShader(true)
-                .setSampleRateShading(true)
-                .setFillModeNonSolid(true)
-                .setShaderSampledImageArrayDynamicIndexing(true)
-                .setWideLines(true);
+                .setGeometryShader(supportedFeatures.geometryShader)
+                .setSampleRateShading(supportedFeatures.sampleRateShading)
+                .setFillModeNonSolid(supportedFeatures.fillModeNonSolid)
+                .setShaderSampledImageArrayDynamicIndexing(supportedFeatures.shaderSampledImageArrayDynamicIndexing)
+                .setWideLines(supportedFeatures.wideLines);
             vk::PhysicalDeviceDescriptorIndexingFeatures indexingFeatures = vk::PhysicalDeviceDescriptorIndexingFeatures()
-                .setDescriptorBindingPartiallyBound(true)
-                .setDescriptorBindingSampledImageUpdateAfterBind(true);
+                .setDescriptorBindingPartiallyBound(supportedIndexingFeatures.descriptorBindingPartiallyBound)
+                .setDescriptorBindingSampledImageUpdateAfterBind(supportedIndexingFeatures.descriptorBindingSampledImageUpdateAfterBind);
             vk::PhysicalDeviceFeatures2 features2 = vk::PhysicalDeviceFeatures2()
                 .setFeatures(features)
                 .setPNext(&indexingFeatures);
 
             std::vector<const char*> deviceExtensions = {
-                VK_EXT_DESCRIPTOR_INDEXING_EXTENSION_NAME,
                 VK_KHR_MAINTENANCE3_EXTENSION_NAME,
             };
+            if(indexingFeatures.descriptorBindingPartiallyBound) {
+                deviceExtensions.push_back(VK_EXT_DESCRIPTOR_INDEXING_EXTENSION_NAME);
+            }
             if(!config.headless) {
                 deviceExtensions.push_back(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
             }
@@ -760,6 +771,8 @@ export class window
                 .setPEnabledLayerNames(layers)
                 .setPEnabledExtensionNames(deviceExtensions)
                 .setPNext(&features2);
+            gpuFeatures.features = features;
+            gpuFeatures.indexingFeatures = indexingFeatures;
 
             device = physicalDevice.createDeviceUnique(device_info);
             VULKAN_HPP_DEFAULT_DISPATCHER.init(*device);
