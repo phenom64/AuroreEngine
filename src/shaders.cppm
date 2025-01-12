@@ -15,6 +15,7 @@ namespace font_renderer {
 namespace image_renderer {
     vk::UniqueShaderModule vert(vk::Device device);
     vk::UniqueShaderModule frag(vk::Device device);
+    vk::UniqueShaderModule frag_compat(vk::Device device);
 }
 
 namespace simple_renderer {

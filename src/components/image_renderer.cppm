@@ -32,13 +32,21 @@ export class image_renderer {
         constexpr static unsigned int default_max_images = 512;
 
         image_renderer(vk::Device device, vk::Extent2D frameSize, const gpu_features& features) : device(device), frameSize(frameSize),
-            aspectRatio(static_cast<double>(frameSize.width)/frameSize.height), compat_mode(!check_features(features)) {}
+            aspectRatio(static_cast<double>(frameSize.width)/frameSize.height), features(features),
+            compat_mode(!check_features(features)) {}
         ~image_renderer() = default;
 
         void preload(const std::vector<vk::RenderPass>& renderPasses, vk::SampleCountFlagBits sampleCount,
             vk::PipelineCache pipelineCache = {}, unsigned int max_images = default_max_images)
         {
             this->max_images = max_images;
+            if(compat_mode) {
+                spdlog::warn("Image Renderer: No update-after-bind support, falling back to compatibility mode");
+            } else if(max_images > features.limits.maxPerStageDescriptorSamplers) {
+                spdlog::warn("Image Renderer: Max images exceeds maxPerStageDescriptorSamplers, falling back to compatibility mode");
+                compat_mode = true;
+            }
+
             {
                 vk::SamplerCreateInfo sampler_info({}, vk::Filter::eLinear, vk::Filter::eLinear, vk::SamplerMipmapMode::eLinear,
                     vk::SamplerAddressMode::eRepeat, vk::SamplerAddressMode::eRepeat, vk::SamplerAddressMode::eRepeat,
@@ -47,7 +55,7 @@ export class image_renderer {
             }
             {
                 std::array<vk::DescriptorSetLayoutBinding, 1> bindings = {
-                    vk::DescriptorSetLayoutBinding(0, vk::DescriptorType::eCombinedImageSampler, max_images, vk::ShaderStageFlagBits::eFragment)
+                    vk::DescriptorSetLayoutBinding(0, vk::DescriptorType::eCombinedImageSampler, compat_mode ? 1 : max_images, vk::ShaderStageFlagBits::eFragment)
                 };
                 vk::DescriptorBindingFlags flags = vk::DescriptorBindingFlagBits::eUpdateAfterBind | vk::DescriptorBindingFlagBits::ePartiallyBound;
                 if(compat_mode)
@@ -69,7 +77,9 @@ export class image_renderer {
             }
             {
                 vk::UniqueShaderModule vertexShader = shaders::image_renderer::vert(device);
-                vk::UniqueShaderModule fragmentShader = shaders::image_renderer::frag(device);
+                vk::UniqueShaderModule fragmentShader =
+                    compat_mode ? shaders::image_renderer::frag_compat(device) :
+                                  shaders::image_renderer::frag(device);
                 std::array<vk::PipelineShaderStageCreateInfo, 2> shaders = {
                     vk::PipelineShaderStageCreateInfo({}, vk::ShaderStageFlagBits::eVertex, vertexShader.get(), "main"),
                     vk::PipelineShaderStageCreateInfo({}, vk::ShaderStageFlagBits::eFragment, fragmentShader.get(), "main")
@@ -107,20 +117,28 @@ export class image_renderer {
             std::array<vk::DescriptorPoolSize, 1> sizes = {
                 vk::DescriptorPoolSize(vk::DescriptorType::eCombinedImageSampler, 1*frameCount*max_images)
             };
-            vk::DescriptorPoolCreateInfo pool_info(vk::DescriptorPoolCreateFlagBits::eUpdateAfterBind,
-                frameCount, sizes);
+            vk::DescriptorPoolCreateInfo pool_info(compat_mode ? vk::DescriptorPoolCreateFlags{} : vk::DescriptorPoolCreateFlagBits::eUpdateAfterBind,
+                compat_mode ? frameCount*max_images : frameCount, sizes);
             descriptorPool = device.createDescriptorPoolUnique(pool_info);
 
-            std::vector<vk::DescriptorSetLayout> layouts(frameCount, descriptorLayout.get());
-            vk::DescriptorSetAllocateInfo set_info(descriptorPool.get(), layouts);
-            descriptorSets = device.allocateDescriptorSets(set_info);
-
-            imageInfos.resize(frameCount);
+            if(compat_mode) {
+                std::vector<vk::DescriptorSetLayout> layouts(max_images, descriptorLayout.get());
+                for(int i = 0; i < frameCount; i++) {
+                    vk::DescriptorSetAllocateInfo set_info(descriptorPool.get(), layouts);
+                    descriptorSetsCompat.push_back(device.allocateDescriptorSets(set_info));
+                    descriptorSetIndicesCompat.push_back(0);
+                }
+            } else {
+                std::vector<vk::DescriptorSetLayout> layouts(frameCount, descriptorLayout.get());
+                vk::DescriptorSetAllocateInfo set_info(descriptorPool.get(), layouts);
+                descriptorSets = device.allocateDescriptorSets(set_info);
+                imageInfos.resize(frameCount);
+            }
         }
 
         void finish(int frame) {
             if(compat_mode) {
-                imageInfos[frame].clear();
+                descriptorSetIndicesCompat[frame] = 0;
                 return;
             }
 
@@ -137,21 +155,28 @@ export class image_renderer {
             if(!view)
                 return;
             vk::DescriptorImageInfo image_info(sampler.get(), view, vk::ImageLayout::eShaderReadOnlyOptimal);
-            int index = imageInfos[frame].size();
-            imageInfos[frame].push_back(image_info);
+
+            unsigned int index{};
+            vk::DescriptorSet descriptorSet;
             if(compat_mode) {
+                index = 0;
+                descriptorSet = descriptorSetsCompat[frame][descriptorSetIndicesCompat[frame]++];
                 vk::WriteDescriptorSet write(
-                    descriptorSets[frame], 0, index,
+                    descriptorSet, 0, 0,
                     1, vk::DescriptorType::eCombinedImageSampler, &image_info);
                 device.updateDescriptorSets(write, {});
+            } else {
+                index = imageInfos[frame].size();
+                descriptorSet = descriptorSets[frame];
+                imageInfos[frame].push_back(image_info);
             }
 
             cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, pipelines[renderPass].get());
-            cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, pipelineLayout.get(), 0, descriptorSets[frame], {});
+            cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, pipelineLayout.get(), 0, descriptorSet, {});
 
             glm::vec2 pos = glm::vec2(x, y)*2.0f - glm::vec2(1.0f);
 
-            push_constants push;
+            push_constants push{};
             push.matrix = glm::mat4(1.0f);
             push.matrix = glm::translate(push.matrix, glm::vec3(pos, 0.0f));
             push.matrix = glm::scale(push.matrix, glm::vec3(scaleX / aspectRatio, scaleY, 1.0f));
@@ -171,24 +196,31 @@ export class image_renderer {
             if(!view)
                 return;
             vk::DescriptorImageInfo image_info(sampler.get(), view, vk::ImageLayout::eShaderReadOnlyOptimal);
-            int index = imageInfos[frame].size();
-            imageInfos[frame].push_back(image_info);
+
+            unsigned int index{};
+            vk::DescriptorSet descriptorSet;
             if(compat_mode) {
+                index = 0;
+                descriptorSet = descriptorSetsCompat[frame][descriptorSetIndicesCompat[frame]++];
                 vk::WriteDescriptorSet write(
-                    descriptorSets[frame], 0, index,
+                    descriptorSet, 0, 0,
                     1, vk::DescriptorType::eCombinedImageSampler, &image_info);
                 device.updateDescriptorSets(write, {});
+            } else {
+                index = imageInfos[frame].size();
+                descriptorSet = descriptorSets[frame];
+                imageInfos[frame].push_back(image_info);
             }
 
             cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, pipelines[renderPass].get());
-            cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, pipelineLayout.get(), 0, descriptorSets[frame], {});
+            cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, pipelineLayout.get(), 0, descriptorSet, {});
 
             double scaleX = static_cast<double>(width) / frameSize.width;
             double scaleY = static_cast<double>(height) / frameSize.height;
 
             glm::vec2 pos = glm::vec2(x, y)*2.0f - glm::vec2(1.0f);
 
-            push_constants push;
+            push_constants push{};
             push.matrix = glm::mat4(1.0f);
             push.matrix = glm::translate(push.matrix, glm::vec3(pos, 0.0f));
             push.matrix = glm::scale(push.matrix, glm::vec3(scaleX, scaleY, 1.0f));
@@ -207,7 +239,9 @@ export class image_renderer {
         vk::Device device;
         vk::Extent2D frameSize;
         double aspectRatio;
-        bool compat_mode;
+
+        const gpu_features& features;
+        bool compat_mode{};
 
         unsigned int max_images;
 
@@ -221,6 +255,9 @@ export class image_renderer {
         std::vector<
             std::vector<vk::DescriptorImageInfo>
         > imageInfos;
+
+        std::vector<std::vector<vk::DescriptorSet>> descriptorSetsCompat;
+        std::vector<unsigned int> descriptorSetIndicesCompat;
 };
 
 }

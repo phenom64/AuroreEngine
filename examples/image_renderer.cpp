@@ -67,6 +67,7 @@ class simple_phase : public dreamrender::phase {
             commandBuffer.setScissor(0, scissor);
 
             imageRenderer.renderImage(commandBuffer, frame, renderPass.get(), texture, 0, 0, 1.0*texture.aspectRatio(), 1.0);
+            imageRenderer.renderImage(commandBuffer, frame, renderPass.get(), texture, 0.25, 0.25, 0.5*texture.aspectRatio(), 0.5);
 
             commandBuffer.endRenderPass();
 

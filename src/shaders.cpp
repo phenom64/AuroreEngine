@@ -48,16 +48,23 @@ namespace image_renderer {
     constexpr char frag_array[] = {
     #embed "shaders/image_renderer.frag.spv"
     };
+    constexpr char frag_compat_array[] = {
+    #embed "shaders/image_renderer.compat.frag.spv"
+    };
     #pragma clang diagnostic pop
 
     constexpr std::array vert_shader = convert<std::to_array(vert_array), uint32_t>();
     constexpr std::array frag_shader = convert<std::to_array(frag_array), uint32_t>();
+    constexpr std::array frag_compat_shader = convert<std::to_array(frag_compat_array), uint32_t>();
 
     vk::UniqueShaderModule vert(vk::Device device) {
         return createShader(device, vert_shader);
     }
     vk::UniqueShaderModule frag(vk::Device device) {
         return createShader(device, frag_shader);
+    }
+    vk::UniqueShaderModule frag_compat(vk::Device device) {
+        return createShader(device, frag_compat_shader);
     }
 }
 

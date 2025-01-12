@@ -779,6 +779,7 @@ export class window
                 .setPNext(&features2);
             gpuFeatures.features = features;
             gpuFeatures.indexingFeatures = indexingFeatures;
+            gpuFeatures.limits = physicalDevice.getProperties().limits;
 
             device = physicalDevice.createDeviceUnique(device_info);
             VULKAN_HPP_DEFAULT_DISPATCHER.init(*device);

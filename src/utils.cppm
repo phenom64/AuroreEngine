@@ -44,6 +44,7 @@ namespace {
 export struct gpu_features {
     vk::PhysicalDeviceFeatures features;
     vk::PhysicalDeviceDescriptorIndexingFeatures indexingFeatures;
+    vk::PhysicalDeviceLimits limits;
 };
 
 export vk::UniqueShaderModule createShader(vk::Device device, std::span<const uint32_t> code) {
