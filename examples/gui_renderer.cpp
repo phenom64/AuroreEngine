@@ -19,9 +19,9 @@ constexpr std::array<uint8_t, sizeof(example_image_data)> example_image =
 class simple_phase : public dreamrender::phase {
     public:
         simple_phase(dreamrender::window* win) : dreamrender::phase(win),
-            fontRenderer{"/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf", 64, device, allocator, win->swapchainExtent},
+            fontRenderer{"/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf", 64, device, allocator, win->swapchainExtent, win->gpuFeatures},
             imageRenderer(device, win->swapchainExtent, win->gpuFeatures),
-            simpleRenderer(device, allocator, win->swapchainExtent) {}
+            simpleRenderer(device, allocator, win->swapchainExtent, win->gpuFeatures) {}
 
         vk::UniqueRenderPass renderPass;
         std::vector<vk::UniqueFramebuffer> framebuffers;

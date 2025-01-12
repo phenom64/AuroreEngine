@@ -8,7 +8,7 @@ import vulkan_hpp;
 class simple_phase : public dreamrender::phase {
     public:
         simple_phase(dreamrender::window* win) : dreamrender::phase(win),
-            simpleRenderer(device, allocator, win->swapchainExtent) {}
+            simpleRenderer(device, allocator, win->swapchainExtent, win->gpuFeatures) {}
 
         vk::UniqueRenderPass renderPass;
         std::vector<vk::UniqueFramebuffer> framebuffers;

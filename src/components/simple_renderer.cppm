@@ -33,7 +33,7 @@ export class simple_renderer {
         };
         using params = simple_params;
 
-        simple_renderer(vk::Device device, vma::Allocator allocator, vk::Extent2D frameSize) :
+        simple_renderer(vk::Device device, vma::Allocator allocator, vk::Extent2D frameSize, const gpu_features& features) :
             device(device), allocator(allocator), frameSize(frameSize),
             aspectRatio(static_cast<double>(frameSize.width)/frameSize.height) {}
         ~simple_renderer() = default;

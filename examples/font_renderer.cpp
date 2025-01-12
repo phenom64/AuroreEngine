@@ -7,7 +7,7 @@ import vulkan_hpp;
 class simple_phase : public dreamrender::phase {
     public:
         simple_phase(dreamrender::window* win) : dreamrender::phase(win),
-            fontRenderer{"/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf", 64, device, allocator, win->swapchainExtent}
+            fontRenderer{"/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf", 64, device, allocator, win->swapchainExtent, win->gpuFeatures}
         {}
 
         vk::UniqueRenderPass renderPass;
@@ -55,6 +55,7 @@ class simple_phase : public dreamrender::phase {
             commandBuffer.setScissor(0, scissor);
 
             fontRenderer.renderText(commandBuffer, frame, renderPass.get(), "Hello World!", 0.0f, 0.0f, 0.1f);
+            fontRenderer.renderText(commandBuffer, frame, renderPass.get(), "Goodbye\nWorld!", 0.0f, 0.1f, 0.1f);
 
             commandBuffer.endRenderPass();
 

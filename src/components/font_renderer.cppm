@@ -27,7 +27,7 @@ import vma;
 namespace dreamrender {
 
 struct ft_library_wrapper {
-    FT_Library lib;
+    FT_Library lib{};
     ft_library_wrapper() {
         if(FT_Init_FreeType(&lib)) {
             throw std::runtime_error("Failed to initialize FreeType library");
@@ -45,7 +45,7 @@ struct ft_library_wrapper {
     }
 };
 struct ft_face_wrapper {
-    FT_Face face;
+    FT_Face face{};
     ft_face_wrapper(FT_Library lib, const std::string& fontName) {
         if(FT_New_Face(lib, fontName.c_str(), 0, &face)) {
             throw std::runtime_error("Failed to load font face");
@@ -58,22 +58,29 @@ struct ft_face_wrapper {
     FT_Face get() {
         return face;
     }
-    const FT_Face get() const {
+    [[nodiscard]] const FT_Face get() const {
         return face;
     }
 };
 
 export class font_renderer {
+    private:
+        static constexpr bool check_features(const gpu_features& features) {
+            if(!features.features.geometryShader)
+                return false;
+            return true;
+        }
     public:
         static constexpr char default_start_char = 32;
         static constexpr char default_end_char = 127;
         static constexpr size_t default_max_characters = 1024;
         static constexpr size_t default_max_texts = 128;
 
-        font_renderer(const std::string& font_name, int font_size,
-            vk::Device device, vma::Allocator allocator, vk::Extent2D frameSize)
-            : fontName(font_name), fontSize(font_size), device(device), allocator(allocator),
-              aspectRatio(static_cast<double>(frameSize.width) / frameSize.height) {}
+        font_renderer(std::string  font_name, int font_size,
+            vk::Device device, vma::Allocator allocator, vk::Extent2D frameSize, const gpu_features& features)
+            : fontName(std::move(font_name)), fontSize(font_size), device(device), allocator(allocator),
+              aspectRatio(static_cast<double>(frameSize.width) / frameSize.height),
+              compat_mode(!check_features(features)) {}
         ~font_renderer() = default;
 
         std::shared_future<void> preload(resource_loader* loader,
@@ -86,8 +93,12 @@ export class font_renderer {
             this->maxCharacters = maxCharacters;
             this->maxTexts = maxTexts;
 
+            if(compat_mode) {
+                spdlog::warn("Font Renderer: No geometry shader support, falling back to compatibility mode");
+            }
+
             std::unique_ptr<ft_library_wrapper> ftManager;
-            FT_Library ftLib;
+            FT_Library ftLib = nullptr;
             if(ft == nullptr) {
                 ftManager = std::make_unique<ft_library_wrapper>();
                 ftLib = ftManager->get();
@@ -144,7 +155,7 @@ export class font_renderer {
                     ch++;
                 }
             }
-            lineHeight = maxHeight;
+            lineHeight = static_cast<float>(maxHeight);
 
             struct guarantee_order {
 #if __cpp_lib_move_only_function >= 202110L
@@ -155,7 +166,7 @@ export class font_renderer {
                 std::shared_ptr<ft_face_wrapper> ftFace;
 #endif
             } go {
-                std::move(ftManager), std::move(ftFace)
+                .ftManager=std::move(ftManager), .ftFace=std::move(ftFace)
             };
 
             fontTexture = std::make_unique<texture>(device, allocator, width, height);
@@ -166,7 +177,7 @@ export class font_renderer {
                 ](uint8_t* p, size_t size)
                 {
                     assert(sizeof(uint32_t)*rows*maxHeight*columns*maxWidth <= size);
-                    uint32_t* pixels = reinterpret_cast<uint32_t*>(p);
+                    auto* pixels = reinterpret_cast<uint32_t*>(p);
 
                     char32_t ch = startChar;
                     FT_Face ftFace = go.ftFace->get();
@@ -227,14 +238,20 @@ export class font_renderer {
                 debugName(device, pipelineLayout.get(), "Font Renderer Pipeline Layout");
             }
             {
-                vk::UniqueShaderModule vertexShader = shaders::font_renderer::vert(device);
-                vk::UniqueShaderModule geometryShader = shaders::font_renderer::geom(device);
+                vk::UniqueShaderModule vertexShader = compat_mode ?
+                    shaders::font_renderer::vert_compat(device) :
+                    shaders::font_renderer::vert(device);
+                vk::UniqueShaderModule geometryShader = {};
                 vk::UniqueShaderModule fragmentShader = shaders::font_renderer::frag(device);
-                std::array<vk::PipelineShaderStageCreateInfo, 3> shaders = {
+                std::vector<vk::PipelineShaderStageCreateInfo> shaders = {
                     vk::PipelineShaderStageCreateInfo({}, vk::ShaderStageFlagBits::eVertex, vertexShader.get(), "main"),
-                    vk::PipelineShaderStageCreateInfo({}, vk::ShaderStageFlagBits::eGeometry, geometryShader.get(), "main"),
                     vk::PipelineShaderStageCreateInfo({}, vk::ShaderStageFlagBits::eFragment, fragmentShader.get(), "main")
                 };
+                if(!compat_mode) {
+                    geometryShader = shaders::font_renderer::geom(device);
+                    shaders.insert(shaders.begin()+1, // not sure if the position is important
+                        vk::PipelineShaderStageCreateInfo({}, vk::ShaderStageFlagBits::eGeometry, geometryShader.get(), "main"));
+                }
 
                 vk::VertexInputBindingDescription binding(0, sizeof(VertexCharacter), vk::VertexInputRate::eVertex);
                 std::array<vk::VertexInputAttributeDescription, 4> attributes = {
@@ -245,7 +262,8 @@ export class font_renderer {
                 };
 
                 vk::PipelineVertexInputStateCreateInfo vertex_input({}, binding, attributes);
-                vk::PipelineInputAssemblyStateCreateInfo input_assembly({}, vk::PrimitiveTopology::ePointList);
+                vk::PipelineInputAssemblyStateCreateInfo input_assembly({},
+                    compat_mode ? vk::PrimitiveTopology::eTriangleList : vk::PrimitiveTopology::ePointList);
                 vk::PipelineTessellationStateCreateInfo tesselation({}, {});
 
                 vk::Viewport v{};
@@ -301,7 +319,13 @@ export class font_renderer {
             for(int i=0; i<imageCount; i++)
             {
                 {
-                    vk::BufferCreateInfo vertex_info({}, maxTexts*maxCharacters*sizeof(VertexCharacter), vk::BufferUsageFlagBits::eVertexBuffer);
+                    vk::DeviceSize size{};
+                    if(compat_mode) {
+                        size = maxTexts*maxCharacters*sizeof(VertexCharacter)*6;
+                    } else {
+                        size = maxTexts*maxCharacters*sizeof(VertexCharacter);
+                    }
+                    vk::BufferCreateInfo vertex_info({}, size, vk::BufferUsageFlagBits::eVertexBuffer);
                     vma::AllocationCreateInfo va_info({}, vma::MemoryUsage::eCpuToGpu);
                     auto [vb, va] = allocator.createBufferUnique(vertex_info, va_info);
                     auto& mapping = vertexMappings.emplace_back(allocator, va.get());
@@ -315,7 +339,7 @@ export class font_renderer {
                     vma::AllocationCreateInfo ua_info({}, vma::MemoryUsage::eCpuToGpu);
                     auto [ub, ua] = allocator.createBufferUnique(uniform_info, ua_info);
                     auto& mapping = uniformMappings.emplace_back(allocator, ua.get());
-                    uniformPointers.push_back(aligned_wrapper<TextUniform>(mapping.get(), alignment));
+                    uniformPointers.emplace_back(mapping.get(), alignment);
 
                     bufferInfos[i].setBuffer(ub.get()).setOffset(0).setRange(sizeof(TextUniform));
                     writes[2*i+0].setDstSet(descriptorSets[i]).setDstBinding(0).setDstArrayElement(0)
@@ -350,26 +374,63 @@ export class font_renderer {
                 return;
             }
 
+            int compat_factor = compat_mode ? 6 : 1;
+            int total_chars = 0;
             {
-                VertexCharacter* vc = vertexPointers[frame] + vertexOffsets[frame];
+                VertexCharacter* vc = vertexPointers[frame] + compat_factor*vertexOffsets[frame];
                 float x = 0;
+                float y = 0;
                 for(int i=0; i<text.size(); i++)
                 {
                     char32_t c = text[i];
                     if(c == '\n') {
-                        y += lineHeight*scale;
+                        y += 1;
                         x = 0;
+                        continue;
                     } else if(!glyphRects.contains(c)) {
                         c = '?';
                     }
+                    total_chars++;
 
                     vk::Rect2D g = glyphRects[c];
-                    vc[i] = {
-                        .position = {x, 0},
-                        .texCoord = {g.offset.x/lineHeight, g.offset.y/lineHeight},
-                        .size = {((float)g.extent.width)/lineHeight, ((float)g.extent.height)/lineHeight},
-                        .color = color};
-                    x+= ((float)g.extent.width)/lineHeight;
+                    if(compat_mode) {
+                        glm::vec2 size = {((float)g.extent.width)/lineHeight, ((float)g.extent.height)/lineHeight};
+
+                        VertexCharacter topLeft = {
+                            .position = {x, y},
+                            .texCoord = {static_cast<float>(g.offset.x)/lineHeight, static_cast<float>(g.offset.y)/lineHeight},
+                            .size = {}, // unused
+                            .color = color};
+                        VertexCharacter bottomLeft = {
+                            .position = {x, y+size.y},
+                            .texCoord = {static_cast<float>(g.offset.x)/lineHeight, static_cast<float>(g.offset.y+g.extent.height)/lineHeight},
+                            .size = {}, // unused
+                            .color = color};
+                        VertexCharacter topRight = {
+                            .position = {x+size.x, y},
+                            .texCoord = {static_cast<float>(g.offset.x+g.extent.width)/lineHeight, static_cast<float>(g.offset.y)/lineHeight},
+                            .size = {}, // unused
+                            .color = color};
+                        VertexCharacter bottomRight = {
+                            .position = {x+size.x, y+size.y},
+                            .texCoord = {static_cast<float>(g.offset.x+g.extent.width)/lineHeight, static_cast<float>(g.offset.y+g.extent.height)/lineHeight},
+                            .size = {}, // unused
+                            .color = color};
+
+                        vc[6*i+0] = topLeft;
+                        vc[6*i+1] = bottomLeft;
+                        vc[6*i+2] = topRight;
+                        vc[6*i+3] = topRight;
+                        vc[6*i+4] = bottomLeft;
+                        vc[6*i+5] = bottomRight;
+                    } else {
+                        vc[i] = {
+                            .position = {x, y},
+                            .texCoord = {static_cast<float>(g.offset.x)/lineHeight, static_cast<float>(g.offset.y)/lineHeight},
+                            .size = {((float)g.extent.width)/lineHeight, ((float)g.extent.height)/lineHeight},
+                            .color = color};
+                    }
+                    x += ((float)g.extent.width)/lineHeight;
                 }
             }
             {
@@ -380,21 +441,24 @@ export class font_renderer {
                 matrix = glm::translate(matrix, glm::vec3(pos, 0.0f));
                 matrix = glm::scale(matrix, glm::vec3(scale/aspectRatio, scale, 1.0f));
                 uni.matrix = matrix;
-                uni.textureSize = {fontTexture->width/lineHeight, fontTexture->height/lineHeight};
+                uni.textureSize = {
+                    static_cast<float>(fontTexture->width)/lineHeight,
+                    static_cast<float>(fontTexture->height)/lineHeight
+                };
             }
             cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, pipelines[renderPass].get());
-            cmd.bindVertexBuffers(0, vertexBuffers[frame].get(), vertexOffsets[frame]*sizeof(VertexCharacter));
+            cmd.bindVertexBuffers(0, vertexBuffers[frame].get(), compat_factor*vertexOffsets[frame]*sizeof(VertexCharacter));
             cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, pipelineLayout.get(), 0, descriptorSets[frame], uniformPointers[frame].offset(uniformOffsets[frame]));
-            cmd.draw(text.size(), 1, 0, 0);
+            cmd.draw(compat_factor*total_chars, 1, 0, 0);
 
-            vertexOffsets[frame] += text.size();
+            vertexOffsets[frame] += total_chars;
             uniformOffsets[frame]++;
         }
         glm::vec2 measureText(std::string_view text, float scale = 1.0f) {
             float width = 0;
-            for(int i=0; i<text.size(); i++)
+            for(char i : text)
             {
-                vk::Rect2D g = glyphRects[text[i]];
+                vk::Rect2D g = glyphRects[i];
                 width += static_cast<float>(g.extent.width)/lineHeight;
             }
             return glm::vec2{width*scale/aspectRatio, scale}/2.0f;
@@ -406,10 +470,12 @@ export class font_renderer {
         std::string fontName;
         int fontSize;
 
+        bool compat_mode{};
+
         std::unordered_map<char32_t, vk::Rect2D> glyphRects;
-        size_t maxCharacters;
-        size_t maxTexts;
-        float lineHeight;
+        size_t maxCharacters{};
+        size_t maxTexts{};
+        float lineHeight{};
 
         struct VertexCharacter {
             glm::vec2 position;

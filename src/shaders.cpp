@@ -16,6 +16,9 @@ namespace font_renderer {
     constexpr char vert_array[] = {
     #embed "shaders/font_renderer.vert.spv"
     };
+    constexpr char vert_compat_array[] = {
+    #embed "shaders/font_renderer.compat.vert.spv"
+    };
     constexpr char geom_array[] = {
     #embed "shaders/font_renderer.geom.spv"
     };
@@ -25,11 +28,15 @@ namespace font_renderer {
     #pragma clang diagnostic pop
 
     constexpr std::array vert_shader = convert<std::to_array(vert_array), uint32_t>();
+    constexpr std::array vert_compat_shader = convert<std::to_array(vert_compat_array), uint32_t>();
     constexpr std::array geom_shader = convert<std::to_array(geom_array), uint32_t>();
     constexpr std::array frag_shader = convert<std::to_array(frag_array), uint32_t>();
 
     vk::UniqueShaderModule vert(vk::Device device) {
         return createShader(device, vert_shader);
+    }
+    vk::UniqueShaderModule vert_compat(vk::Device device) {
+        return createShader(device, vert_compat_shader);
     }
     vk::UniqueShaderModule geom(vk::Device device) {
         return createShader(device, geom_shader);

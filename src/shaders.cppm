@@ -8,6 +8,7 @@ export namespace dreamrender::shaders {
 
 namespace font_renderer {
     vk::UniqueShaderModule vert(vk::Device device);
+    vk::UniqueShaderModule vert_compat(vk::Device device);
     vk::UniqueShaderModule geom(vk::Device device);
     vk::UniqueShaderModule frag(vk::Device device);
 }

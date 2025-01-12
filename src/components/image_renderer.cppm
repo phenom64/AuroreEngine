@@ -19,15 +19,15 @@ struct push_constants {
     unsigned int index;
 };
 
-constexpr bool check_features(const gpu_features& features) {
-    if(!features.indexingFeatures.descriptorBindingPartiallyBound)
-        return false;
-    if(!features.indexingFeatures.descriptorBindingSampledImageUpdateAfterBind)
-        return false;
-    return true;
-}
-
 export class image_renderer {
+    private:
+        static constexpr bool check_features(const gpu_features& features) {
+            if(!features.indexingFeatures.descriptorBindingPartiallyBound)
+                return false;
+            if(!features.indexingFeatures.descriptorBindingSampledImageUpdateAfterBind)
+                return false;
+            return true;
+        }
     public:
         constexpr static unsigned int default_max_images = 512;
 
@@ -62,7 +62,7 @@ export class image_renderer {
                     flags = vk::DescriptorBindingFlags{};
                 vk::DescriptorSetLayoutBindingFlagsCreateInfo bindingInfo(flags);
                 vk::DescriptorSetLayoutCreateInfo layout_info(
-                    compat_mode ? vk::DescriptorSetLayoutCreateFlagBits{} : vk::DescriptorSetLayoutCreateFlagBits::eUpdateAfterBindPool,
+                    compat_mode ? vk::DescriptorSetLayoutCreateFlags{} : vk::DescriptorSetLayoutCreateFlagBits::eUpdateAfterBindPool,
                     bindings, &bindingInfo);
                 descriptorLayout = device.createDescriptorSetLayoutUnique(layout_info);
                 debugName(device, descriptorLayout.get(), "Image Renderer Descriptor Layout");
