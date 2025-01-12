@@ -277,7 +277,7 @@ export class window
                             sdl::unique_surface surface{sdl::CreateRGBSurfaceWithFormatFrom(data.data(),
                                 swapchainExtent.width, swapchainExtent.height, 32, swapchainExtent.width*4,
                                 sdl::PixelFormatEnumVales::ABGR8888)};
-                            std::filesystem::path path = config.headless_output_dir / std::format("{}.png", totalFrameNumber);
+                            std::filesystem::path path = config.headless_output_dir / std::format("{}.jpg", totalFrameNumber);
                             sdl::image::SaveJPG(surface.get(), path.c_str(), 100);
                         }
                     }
@@ -311,6 +311,12 @@ export class window
 
                     vk::CommandBuffer& commandBuffer = headlessCommandBuffersPost[imageIndex];
                     commandBuffer.begin(vk::CommandBufferBeginInfo());
+                    commandBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eColorAttachmentOutput,
+                        vk::PipelineStageFlagBits::eTransfer, {}, {}, {},
+                        vk::ImageMemoryBarrier(vk::AccessFlagBits::eColorAttachmentWrite, vk::AccessFlagBits::eTransferRead,
+                            swapchainFinalLayout, vk::ImageLayout::eTransferSrcOptimal,
+                            VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, headlessTextures[imageIndex].image,
+                            vk::ImageSubresourceRange(vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1)));
                     commandBuffer.copyImageToBuffer(headlessTextures[imageIndex].image, vk::ImageLayout::eTransferSrcOptimal,
                         headlessOutputBuffers[imageIndex].get(),
                         vk::BufferImageCopy(0, 0, 0, vk::ImageSubresourceLayers(vk::ImageAspectFlagBits::eColor, 0, 0, 1),
@@ -815,8 +821,8 @@ export class window
                 for(unsigned int i=0; i<swapchainImageCount; i++) {
                     headlessTextures.push_back(texture{device.get(), allocator,
                         static_cast<int>(swapchainExtent.width), static_cast<int>(swapchainExtent.height),
-                        vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eTransferSrc,
-                        swapchainFormat.format, config.sampleCount});
+                        vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eTransferSrc | vk::ImageUsageFlagBits::eSampled,
+                        swapchainFormat.format, vk::SampleCountFlagBits::e1});
                     swapchainImages.push_back(headlessTextures.back().image);
                     vk::ImageViewCreateInfo view_info({}, swapchainImages.back(), vk::ImageViewType::e2D, swapchainFormat.format,
                         vk::ComponentMapping{}, vk::ImageSubresourceRange(vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1));
