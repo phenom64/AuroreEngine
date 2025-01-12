@@ -88,8 +88,11 @@ export struct window_config {
     unsigned int height = -1;
     bool fullscreen = true;
     std::map<std::string, std::string> sdl_hints{};
+
     bool headless = false;
     std::filesystem::path headless_output_dir = "output";
+    std::string headless_output_format = "{:05d}.jpg";
+    int headless_output_quality = 90;
 
     std::string name;
     int version = 1;
@@ -148,6 +151,12 @@ export class window
                 sdl::SetHint("SDL_NO_SIGNAL_HANDLERS", "1");
                 if(const char* c = std::getenv("DREAMRENDER_HEADLESS_OUTPUT_DIR")) {
                     config.headless_output_dir = c;
+                }
+                if(const char* c = std::getenv("DREAMRENDER_HEADLESS_OUTPUT_PATTERN")) {
+                    config.headless_output_format = c;
+                }
+                if(const char* c = std::getenv("DREAMRENDER_HEADLESS_OUTPUT_QUALITY")) {
+                    config.headless_output_quality = std::stoi(c);
                 }
                 if(const char* c = std::getenv("DREAMRENDER_HEADLESS_WIDTH")) {
                     config.width = std::stoi(c);
@@ -277,8 +286,17 @@ export class window
                             sdl::unique_surface surface{sdl::CreateRGBSurfaceWithFormatFrom(data.data(),
                                 swapchainExtent.width, swapchainExtent.height, 32, swapchainExtent.width*4,
                                 sdl::PixelFormatEnumVales::ABGR8888)};
-                            std::filesystem::path path = config.headless_output_dir / std::format("{}.jpg", totalFrameNumber);
-                            sdl::image::SaveJPG(surface.get(), path.c_str(), 100);
+                            std::filesystem::path path = config.headless_output_dir / std::vformat(config.headless_output_format, std::make_format_args(totalFrameNumber));
+                            std::string ext = path.extension();
+                            if(ext == ".png") {
+                                sdl::image::SavePNG(surface.get(), path.c_str());
+                            } else if(ext == ".jpg" || ext == ".jpeg") {
+                                sdl::image::SaveJPG(surface.get(), path.c_str(), config.headless_output_quality);
+                            } else {
+                                spdlog::error("Unknown output format \"{}\". Supported formats are: PNG, JPG", ext);
+                                spdlog::warn("Disabling output of images!");
+                                config.headless_output_dir.clear();
+                            }
                         }
                     }
 
