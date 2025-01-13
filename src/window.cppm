@@ -5,6 +5,7 @@ module;
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <iostream>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -13,6 +14,7 @@ module;
 #include <thread>
 #include <vector>
 
+#include <termios.h>
 #include <vulkan/vulkan_core.h>
 #include <vulkan/vulkan_hpp_macros.hpp>
 
@@ -90,9 +92,11 @@ export struct window_config {
     std::map<std::string, std::string> sdl_hints{};
 
     bool headless = false;
+    bool headless_terminal = false;
     std::filesystem::path headless_output_dir = "output";
     std::string headless_output_format = "{:05d}.jpg";
     int headless_output_quality = 90;
+    int headless_frames = -1;
 
     std::string name;
     int version = 1;
@@ -149,6 +153,23 @@ export class window
         void init() {
             if(config.headless) {
                 sdl::SetHint("SDL_NO_SIGNAL_HANDLERS", "1");
+                if(const char* c = std::getenv("DREAMRENDER_HEADLESS_TERMINAL")) {
+                    config.headless_terminal = true;
+                    config.headless_output_dir.clear();
+
+                    spdlog::info("Switching log to stderr");
+                    // https://github.com/gabime/spdlog/wiki/0.-FAQ#switch-the-default-logger-to-stderr
+                    spdlog::set_default_logger(spdlog::stderr_color_st("temp"));
+                    spdlog::set_default_logger(spdlog::stderr_color_st(""));
+
+                    struct termios term{};
+                    tcgetattr(STDIN_FILENO, &term);
+                    term.c_lflag &= ~ICANON & ~ECHO;
+                    tcsetattr(STDIN_FILENO, TCSANOW, &term);
+
+                    static std::vector<char> buffer(32*1024*1024); // 32 MiB buffer, so it is smooth
+                    std::setvbuf(stdout, buffer.data(), _IOFBF, buffer.size());
+                }
                 if(const char* c = std::getenv("DREAMRENDER_HEADLESS_OUTPUT_DIR")) {
                     config.headless_output_dir = c;
                 }
@@ -163,6 +184,9 @@ export class window
                 }
                 if(const char* c = std::getenv("DREAMRENDER_HEADLESS_HEIGHT")) {
                     config.height = std::stoi(c);
+                }
+                if(const char* c = std::getenv("DREAMRENDER_HEADLESS_FRAMES")) {
+                    config.headless_frames = std::stoi(c);
                 }
                 if(!config.headless_output_dir.empty() &&
                    !std::filesystem::exists(config.headless_output_dir))
@@ -185,63 +209,28 @@ export class window
             framesInSecond = 0;
 
             int currentFrame = 0;
-            vk::Result r;
+            vk::Result r{};
             for(;;) {
-                if(!config.headless) {
-                    sdl::Event event;
-                    while(sdl::PollEvent(&event)) {
-                        switch(event.type) {
-                            case sdl::EventType::SDL_QUIT:
-                                return;
-                            case sdl::EventType::SDL_KEYDOWN:
-                                if(keyboard_handler)
-                                    keyboard_handler->key_down(event.key.keysym);
-                                break;
-                            case sdl::EventType::SDL_KEYUP:
-                                if(keyboard_handler)
-                                    keyboard_handler->key_up(event.key.keysym);
-                                break;
-                            case sdl::EventType::SDL_CONTROLLERBUTTONDOWN:
-                                if(controller_handler)
-                                    controller_handler->button_down(controllers[event.cbutton.which].get(),
-                                        static_cast<sdl::GameControllerButton>(event.cbutton.button)
-                                    );
-                                break;
-                            case sdl::EventType::SDL_CONTROLLERBUTTONUP:
-                                if(controller_handler)
-                                    controller_handler->button_up(controllers[event.cbutton.which].get(),
-                                        static_cast<sdl::GameControllerButton>(event.cbutton.button)
-                                    );
-                                break;
-                            case sdl::EventType::SDL_CONTROLLERAXISMOTION:
-                                if(controller_handler)
-                                    controller_handler->axis_motion(controllers[event.caxis.which].get(),
-                                        static_cast<sdl::GameControllerAxis>(event.caxis.axis),
-                                        event.caxis.value
-                                    );
-                                break;
-                            case sdl::EventType::SDL_CONTROLLERDEVICEADDED:
-                                if(sdl::IsGameController(event.cdevice.which)) {
-                                    auto controller = sdl::GameControllerOpen(event.cdevice.which);
-                                    if(controller) {
-                                        sdl::JoystickID id = sdl::JoystickInstanceID(sdl::GameControllerGetJoystick(controller));
-                                        controllers[id] = std::unique_ptr<sdl::GameController, sdl_controller_closer>(controller);
-                                        spdlog::debug("Connected controller \"{}\" with id {}", sdl::GameControllerName(controller), id);
-                                        if(controller_handler)
-                                            controller_handler->add_controller(controller);
-                                    } else {
-                                        spdlog::warn("Failed to open controller {}: {}", event.cdevice.which, sdl::GetError());
-                                    }
-                                }
-                                break;
-                            case sdl::EventType::SDL_CONTROLLERDEVICEREMOVED:
-                                if(controller_handler)
-                                    controller_handler->remove_controller(controllers[event.cdevice.which].get());
-                                if(controllers.contains(event.cdevice.which)) {
-                                    spdlog::debug("Disconnected controller \"{}\" with id {}", sdl::GameControllerName(controllers[event.cdevice.which].get()), event.cdevice.which);
-                                    controllers.erase(event.cdevice.which);
-                                }
-                        }
+                if(config.headless) {
+                    if(config.headless_frames > 0 && totalFrameNumber >= config.headless_frames) {
+                        spdlog::info("Finished rendering {} frames", totalFrameNumber);
+                        return;
+                    }
+
+                    bool quit = false;
+                    if(config.headless_terminal) {
+                        handle_headless_terminal(quit);
+                    } else {
+                        handle_headless_commands(quit);
+                    }
+                    if(quit) {
+                        return;
+                    }
+                } else {
+                    bool quit = false;
+                    handle_sdl_events(quit);
+                    if(quit) {
+                        return;
                     }
 
                     auto now = std::chrono::high_resolution_clock::now();
@@ -276,26 +265,32 @@ export class window
                         if(r != vk::Result::eSuccess)
                             spdlog::error("Waiting for imagesInFlight[{0}] and headlessFences[{0}] failed with result {1}", imageIndex, vk::to_string(r));
 
-                        if(!config.headless_output_dir.empty()) {
+                        if(!config.headless_output_dir.empty() || config.headless_terminal) {
                             std::vector<char> data(swapchainExtent.width*swapchainExtent.height*4);
                             r = allocator.copyAllocationToMemory(headlessOutputAllocations[imageIndex].get(),
                                 0, data.data(), swapchainExtent.width*swapchainExtent.height*4);
                             if(r != vk::Result::eSuccess)
                                 spdlog::error("Copying headlessOutputAllocations[{}] to memory failed with result {}", imageIndex, vk::to_string(r));
 
-                            sdl::unique_surface surface{sdl::CreateRGBSurfaceWithFormatFrom(data.data(),
-                                swapchainExtent.width, swapchainExtent.height, 32, swapchainExtent.width*4,
-                                sdl::PixelFormatEnumVales::ABGR8888)};
-                            std::filesystem::path path = config.headless_output_dir / std::vformat(config.headless_output_format, std::make_format_args(totalFrameNumber));
-                            std::string ext = path.extension();
-                            if(ext == ".png") {
-                                sdl::image::SavePNG(surface.get(), path.c_str());
-                            } else if(ext == ".jpg" || ext == ".jpeg") {
-                                sdl::image::SaveJPG(surface.get(), path.c_str(), config.headless_output_quality);
-                            } else {
-                                spdlog::error("Unknown output format \"{}\". Supported formats are: PNG, JPG", ext);
-                                spdlog::warn("Disabling output of images!");
-                                config.headless_output_dir.clear();
+                            if(!config.headless_output_dir.empty()) {
+                                sdl::unique_surface surface{sdl::CreateRGBSurfaceWithFormatFrom(data.data(),
+                                    swapchainExtent.width, swapchainExtent.height, 32, swapchainExtent.width*4,
+                                    sdl::PixelFormatEnumVales::ABGR8888)};
+                                std::filesystem::path path = config.headless_output_dir / std::vformat(config.headless_output_format, std::make_format_args(totalFrameNumber));
+                                std::string ext = path.extension();
+                                if(ext == ".png") {
+                                    sdl::image::SavePNG(surface.get(), path.c_str());
+                                } else if(ext == ".jpg" || ext == ".jpeg") {
+                                    sdl::image::SaveJPG(surface.get(), path.c_str(), config.headless_output_quality);
+                                } else {
+                                    spdlog::error("Unknown output format \"{}\". Supported formats are: PNG, JPG", ext);
+                                    spdlog::warn("Disabling output of images!");
+                                    config.headless_output_dir.clear();
+                                }
+                            }
+                            if(config.headless_terminal) {
+                                terminal_output(data, swapchainExtent, std::cout);
+                                std::cout << std::flush;
                             }
                         }
                     }
@@ -972,6 +967,140 @@ export class window
             details.presentModes = phyDev.getSurfacePresentModesKHR(surface.get());
 
             return details;
+        }
+
+        void handle_sdl_events(bool& should_exit) {
+            sdl::Event event;
+            while(sdl::PollEvent(&event)) {
+                switch(event.type) {
+                    case sdl::EventType::SDL_QUIT:
+                        should_exit = true;
+                        return;
+                    case sdl::EventType::SDL_KEYDOWN:
+                        if(keyboard_handler)
+                            keyboard_handler->key_down(event.key.keysym);
+                        break;
+                    case sdl::EventType::SDL_KEYUP:
+                        if(keyboard_handler)
+                            keyboard_handler->key_up(event.key.keysym);
+                        break;
+                    case sdl::EventType::SDL_CONTROLLERBUTTONDOWN:
+                        if(controller_handler)
+                            controller_handler->button_down(controllers[event.cbutton.which].get(),
+                                static_cast<sdl::GameControllerButton>(event.cbutton.button)
+                            );
+                        break;
+                    case sdl::EventType::SDL_CONTROLLERBUTTONUP:
+                        if(controller_handler)
+                            controller_handler->button_up(controllers[event.cbutton.which].get(),
+                                static_cast<sdl::GameControllerButton>(event.cbutton.button)
+                            );
+                        break;
+                    case sdl::EventType::SDL_CONTROLLERAXISMOTION:
+                        if(controller_handler)
+                            controller_handler->axis_motion(controllers[event.caxis.which].get(),
+                                static_cast<sdl::GameControllerAxis>(event.caxis.axis),
+                                event.caxis.value
+                            );
+                        break;
+                    case sdl::EventType::SDL_CONTROLLERDEVICEADDED:
+                        if(sdl::IsGameController(event.cdevice.which)) {
+                            auto controller = sdl::GameControllerOpen(event.cdevice.which);
+                            if(controller) {
+                                sdl::JoystickID id = sdl::JoystickInstanceID(sdl::GameControllerGetJoystick(controller));
+                                controllers[id] = std::unique_ptr<sdl::GameController, sdl_controller_closer>(controller);
+                                spdlog::debug("Connected controller \"{}\" with id {}", sdl::GameControllerName(controller), id);
+                                if(controller_handler)
+                                    controller_handler->add_controller(controller);
+                            } else {
+                                spdlog::warn("Failed to open controller {}: {}", event.cdevice.which, sdl::GetError());
+                            }
+                        }
+                        break;
+                    case sdl::EventType::SDL_CONTROLLERDEVICEREMOVED:
+                        if(controller_handler)
+                            controller_handler->remove_controller(controllers[event.cdevice.which].get());
+                        if(controllers.contains(event.cdevice.which)) {
+                            spdlog::debug("Disconnected controller \"{}\" with id {}", sdl::GameControllerName(controllers[event.cdevice.which].get()), event.cdevice.which);
+                            controllers.erase(event.cdevice.which);
+                        }
+                }
+            }
+        }
+
+        void handle_headless_commands(bool& should_exit) {
+            while(input_available(STDIN_FILENO)) {
+                std::string line;
+                std::getline(std::cin, line);
+
+                std::istringstream iss(line);
+                std::string cmd;
+                iss >> cmd;
+                if(cmd == "quit" || cmd == "exit") {
+                    should_exit = true;
+                    return;
+                } else if(cmd == "keyboard") {
+                    std::string subcmd;
+                    iss >> subcmd;
+
+                    sdl::Keysym keysym;
+                    std::underlying_type_t<decltype(keysym.scancode)> scancode{};
+                    iss >> scancode >> keysym.sym >> keysym.mod;
+                    keysym.scancode = static_cast<decltype(keysym.scancode)>(scancode);
+
+                    if(subcmd == "down") {
+                        if(keyboard_handler) {
+                            keyboard_handler->key_down(keysym);
+                        }
+                    } else if(subcmd == "up") {
+                        if(keyboard_handler) {
+                            keyboard_handler->key_up(keysym);
+                        }
+                    }
+                }
+            }
+        }
+
+        void handle_headless_terminal(bool& should_exit) {
+            const auto emulate_key = [this](sdl::Scancode scancode, sdl::KeyCode sym, sdl::Keymod mod) {
+                if(keyboard_handler) {
+                    sdl::Keysym keysym{scancode, sym, static_cast<uint16_t>(mod)};
+                    keyboard_handler->key_down(keysym);
+                    keyboard_handler->key_up(keysym);
+                }
+            };
+
+            using sdl::Scancode;
+            using sdl::KeyCode;
+            using sdl::Keymod;
+            while(input_available(STDIN_FILENO)) {
+                int c = std::cin.get();
+                if(c == '\e') {
+                    c = std::cin.get();
+                    if(c != '[') {
+                        spdlog::warn("Invalid escape sequence: \\e\\x{:02x}", c);
+                        continue;
+                    }
+                    c = std::cin.get();
+                    switch(c) {
+                        case 'A': // up
+                            emulate_key(Scancode::SDL_SCANCODE_UP, KeyCode::SDLK_UP, Keymod::KMOD_NONE);
+                            break;
+                        case 'B': // down
+                            emulate_key(Scancode::SDL_SCANCODE_DOWN, KeyCode::SDLK_DOWN, Keymod::KMOD_NONE);
+                            break;
+                        case 'C': // right
+                            emulate_key(Scancode::SDL_SCANCODE_RIGHT, KeyCode::SDLK_RIGHT, Keymod::KMOD_NONE);
+                            break;
+                        case 'D': // left
+                            emulate_key(Scancode::SDL_SCANCODE_LEFT, KeyCode::SDLK_LEFT, Keymod::KMOD_NONE);
+                            break;
+                        default:
+                            spdlog::warn("Unknown escape sequence: \\e[\\x5b{}", c);
+                            break;
+                    }
+                }
+            }
         }
 };
 

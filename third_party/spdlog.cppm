@@ -3,6 +3,8 @@ module;
 #include <spdlog/spdlog.h>
 #include <spdlog/cfg/env.h>
 #include <spdlog/cfg/argv.h>
+#include <spdlog/sinks/stdout_sinks.h>
+#include <spdlog/sinks/stdout_color_sinks.h>
 
 export module spdlog;
 
@@ -15,6 +17,19 @@ export namespace spdlog {
     using spdlog::critical;
     using spdlog::set_level;
     using spdlog::should_log;
+
+    using spdlog::set_default_logger;
+    using spdlog::default_logger;
+    using spdlog::create;
+
+    using spdlog::stdout_logger_st;
+    using spdlog::stdout_logger_mt;
+    using spdlog::stderr_logger_st;
+    using spdlog::stderr_logger_mt;
+    using spdlog::stdout_color_st;
+    using spdlog::stdout_color_mt;
+    using spdlog::stderr_color_st;
+    using spdlog::stderr_color_mt;
 
     namespace level {
         using spdlog::level::trace;

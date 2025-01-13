@@ -1,8 +1,11 @@
 module;
 
+#include <cmath>
 #include <cstdint>
 #include <filesystem>
+#include <format>
 #include <fstream>
+#include <iostream>
 #include <map>
 #include <span>
 #include <vector>
@@ -10,6 +13,9 @@ module;
 #ifdef __GNUG__
 #include <cxxabi.h>
 #endif
+#include <poll.h>
+#include <sys/ioctl.h>
+#include <unistd.h>
 
 export module dreamrender:utils;
 
@@ -159,6 +165,59 @@ std::string demangle(const char *name) {
 export template <class T>
 std::string type_name(const T& t) {
     return demangle(typeid(t).name());
+}
+
+bool input_available(int fd) {
+    struct pollfd fds = {.fd = fd, .events = POLLIN, .revents = 0};
+    return poll(&fds, 1, 0) == 1;
+}
+
+void terminal_output(std::span<const char> data, vk::Extent2D extent, std::ostream& out) {
+    std::cout << "\033[2J\033[0;0H";
+    struct winsize w{};
+    ioctl(STDOUT_FILENO, TIOCGWINSZ, &w);
+
+    float x_per_c = static_cast<float>(w.ws_xpixel) / static_cast<float>(w.ws_col);
+    float y_per_c = static_cast<float>(w.ws_ypixel) / static_cast<float>(w.ws_row);
+    float character_ratio = w.ws_xpixel == 0 ? 2.0f : x_per_c / y_per_c;
+    float fsx = static_cast<float>(extent.width) / w.ws_col;
+    float fsy = static_cast<float>(extent.height) / w.ws_row / character_ratio;
+    fsx = std::max(fsx, fsy);
+    fsy = fsx * character_ratio;
+    int sx = std::ceil(fsx);
+    int sy = std::ceil(fsy);
+
+    for(int y=0; y<extent.height; y+=sy)
+    {
+        int last_r = -1, last_g = -1, last_b = -1;
+        for(int x=0; x<extent.width; x+=sx)
+        {
+            int tr = 0, tg = 0, tb = 0, t = 0;
+            for(int dy=0; dy<sy && y+dy < extent.height; dy++)
+            {
+                for(int dx=0; dx<sx && x+dx < extent.width; dx++)
+                {
+                    unsigned int i = (y+dy)*extent.width*4 + (x+dx)*4;
+                    tr += static_cast<unsigned char>(data[i+0]);
+                    tg += static_cast<unsigned char>(data[i+1]);
+                    tb += static_cast<unsigned char>(data[i+2]);
+                    t++;
+                }
+            }
+            int r = tr/t, g = tg/t, b = tb/t;
+            if(r == last_r && g == last_g && b == last_b) {
+                std::cout << ' ';
+            } else {
+                std::cout << std::format("\x1B[48;2;{};{};{}m ", r, g, b);
+                last_r = r;
+                last_g = g;
+                last_b = b;
+            }
+        }
+        std::cout << "\x1B[0m";
+        if(y+sy < extent.height)
+            std::cout << '\n';
+    }
 }
 
 }

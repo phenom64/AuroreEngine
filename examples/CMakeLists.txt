@@ -5,6 +5,7 @@ set(EXAMPLES
   gui_renderer
   transparency
   simple_renderer
+  input
 )
 
 foreach(EXAMPLE ${EXAMPLES})

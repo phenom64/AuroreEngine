@@ -66,6 +66,10 @@ export namespace sdl {
     using Event = SDL_Event;
     using EventType = SDL_EventType;
     using Keysym = SDL_Keysym;
+    using Scancode = SDL_Scancode;
+    using Keycode = SDL_Keycode;
+    using KeyCode = SDL_KeyCode;
+    using Keymod = SDL_Keymod;
     using GameController = SDL_GameController;
     using GameControllerButton = SDL_GameControllerButton;
     using GameControllerAxis = SDL_GameControllerAxis;
