@@ -113,16 +113,8 @@ export struct window_config {
 export class window
 {
     public:
-        window(window_config config) : config(config) {
-            if(std::getenv("DREAMRENDER_HEADLESS")) {
-                this->config.headless = true;
-            }
-        }
-        window(window_config&& config) : config(std::move(config)) {
-            if(std::getenv("DREAMRENDER_HEADLESS")) {
-                this->config.headless = true;
-            }
-        }
+        window(window_config config) : config(config) {}
+        window(window_config&& config) : config(std::move(config)) {}
         ~window() {
             spdlog::debug("Destroying window");
 
@@ -151,12 +143,30 @@ export class window
         }
 
         void init() {
+            if(const char* c = std::getenv("DREAMRENDER_HEADLESS")) {
+                std::string_view sv{c};
+                if(sv == "1") {
+                    config.headless = true;
+                } else if(sv == "0") {
+                    config.headless = false;
+                } else {
+                    spdlog::warn("Unknown value for DREAMRENDER_HEADLESS: \"{}\"", c);
+                }
+            }
             if(config.headless) {
                 sdl::SetHint("SDL_NO_SIGNAL_HANDLERS", "1");
                 if(const char* c = std::getenv("DREAMRENDER_HEADLESS_TERMINAL")) {
-                    config.headless_terminal = true;
-                    config.headless_output_dir.clear();
-
+                    std::string_view sv{c};
+                    if(sv == "1") {
+                        config.headless_terminal = true;
+                        config.headless_output_dir.clear();
+                    } else if(sv == "0") {
+                        config.headless_terminal = false;
+                    } else {
+                        spdlog::warn("Unknown value for DREAMRENDER_HEADLESS_TERMINAL: \"{}\"", c);
+                    }
+                }
+                if(config.headless_terminal) {
                     spdlog::info("Switching log to stderr");
                     // https://github.com/gabime/spdlog/wiki/0.-FAQ#switch-the-default-logger-to-stderr
                     spdlog::set_default_logger(spdlog::stderr_color_st("temp"));
