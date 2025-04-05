@@ -31,6 +31,17 @@ export namespace vma {
     using vma::UniqueAllocation;
     using vma::UniqueAllocator;
 
+    using vma::VirtualBlock;
+    using vma::VirtualBlockCreateInfo;
+    using vma::VirtualBlockCreateFlags;
+    using vma::VirtualBlockCreateFlagBits;
+    using vma::UniqueVirtualBlock;
+    using vma::VirtualAllocation;
+    using vma::VirtualAllocationCreateInfo;
+    using vma::VirtualAllocationCreateFlags;
+    using vma::VirtualAllocationCreateFlagBits;
+    using vma::UniqueVirtualAllocation;
+
     class MemoryMapping {
         public:
             MemoryMapping(Allocator allocator, Allocation allocation) : allocator(allocator), allocation(allocation) {
@@ -43,7 +54,7 @@ export namespace vma {
             }
 
             MemoryMapping(const MemoryMapping&) = delete;
-            MemoryMapping(MemoryMapping&& other) : 
+            MemoryMapping(MemoryMapping&& other) :
                 allocator(std::exchange(other.allocator, Allocator{})),
                 allocation(std::exchange(other.allocation, Allocation{})),
                 ptr(std::exchange(other.ptr, nullptr)) {}
