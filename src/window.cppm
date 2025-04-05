@@ -1,5 +1,6 @@
 module;
 
+#include <algorithm>
 #include <cstdint>
 #include <chrono>
 #include <filesystem>
@@ -130,11 +131,14 @@ export class window
                     std::filesystem::create_directories(path.parent_path());
 
                 std::ofstream out(path, std::ios::binary);
-                std::copy(data.begin(), data.end(), std::ostream_iterator<uint8_t>(out));
+                std::ranges::copy(data, std::ostream_iterator<uint8_t>(out));
             }
             current_renderer.reset();
             loader.reset();
 
+            headlessTextures.clear();
+            headlessOutputBuffers.clear();
+            headlessOutputAllocations.clear();
             allocator.destroy();
 
             if(!config.headless) {
@@ -233,6 +237,7 @@ export class window
                     } else {
                         handle_headless_commands(quit);
                     }
+                    handle_sdl_events(quit);
                     if(quit) {
                         return;
                     }
@@ -391,7 +396,7 @@ export class window
                 graphicsQueue.waitIdle();
             }
 
-            auto presentModeIt = std::find_if(swapchainSupport.presentModes.begin(), swapchainSupport.presentModes.end(), [this](auto p){
+            auto presentModeIt = std::ranges::find_if(swapchainSupport.presentModes, [this](auto p){
                 return p == config.preferredPresentMode;
             });
             swapchainPresentMode = presentModeIt == swapchainSupport.presentModes.end() ? swapchainSupport.presentModes[0] : *presentModeIt;
@@ -615,7 +620,7 @@ export class window
 
                 std::vector<const char*> sdlExtensions(sdlExtensionCount);
                 sdl::vk::GetInstanceExtensions(win.get(), &sdlExtensionCount, sdlExtensions.data());
-                std::copy(sdlExtensions.begin(), sdlExtensions.end(), std::back_inserter(extensions));
+                std::ranges::copy(sdlExtensions, std::back_inserter(extensions));
             }
 
             spdlog::debug("Using extensions: {}", fmt::join(extensions, ", "));
@@ -657,7 +662,6 @@ export class window
             spdlog::debug("Found {} video devices:", devices.size());
 
             const char* env;
-
             std::optional<unsigned int> device_index = config.device_index;
             if(!device_index.has_value() && (env = std::getenv("DREAMRENDER_DEVICE_INDEX"))) {
                 device_index = std::stoi(env);
@@ -679,9 +683,9 @@ export class window
                 auto uuid = props.pipelineCacheUUID;
                 std::ostringstream uuidStrStream;
                 uuidStrStream << std::hex << std::setfill('0');
-                for(int i=0; i<uuid.size(); i++)
+                for(unsigned char i : uuid)
                 {
-                    uuidStrStream << std::setw(2) << static_cast<unsigned int>(uuid[i]);
+                    uuidStrStream << std::setw(2) << static_cast<unsigned int>(i);
                 }
                 std::string uuidStr = uuidStrStream.str();
 
@@ -727,7 +731,7 @@ export class window
                     vk::SampleCountFlagBits::e32,
                     vk::SampleCountFlagBits::e64,
                 };
-                int index = std::distance(sampleCounts.begin(), std::find(sampleCounts.begin(), sampleCounts.end(), config.sampleCount));
+                int index = std::distance(sampleCounts.begin(), std::ranges::find(sampleCounts, config.sampleCount));
                 for(int i=1; i<8; i++)
                 {
                     if(index+i < sampleCounts.size() && (supportedSamples & sampleCounts[index+i]))
@@ -750,10 +754,10 @@ export class window
                 queueFamilyIndices.transferFamily.value_or(UINT32_MAX)};
             auto families = physicalDevice.getQueueFamilyProperties();
 
-            std::vector<float> priorities(std::max_element(families.begin(), families.end(), [](auto a, auto b){
+            std::vector<float> priorities(std::ranges::max_element(families, [](auto a, auto b){
                 return a.queueCount < b.queueCount;
             })->queueCount);
-            std::fill(priorities.begin(), priorities.end(), 1.0f);
+            std::ranges::fill(priorities, 1.0f);
             for(uint32_t queueFamily : uniqueQueueFamilies)
             {
                 if(queueFamily == UINT32_MAX)
@@ -843,10 +847,10 @@ export class window
                 swapchainImageViews.clear();
                 swapchainImageViewsRaw.clear();
                 for(unsigned int i=0; i<swapchainImageCount; i++) {
-                    headlessTextures.push_back(texture{device.get(), allocator,
+                    headlessTextures.emplace_back(device.get(), allocator,
                         static_cast<int>(swapchainExtent.width), static_cast<int>(swapchainExtent.height),
                         vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eTransferSrc | vk::ImageUsageFlagBits::eSampled,
-                        swapchainFormat.format, vk::SampleCountFlagBits::e1});
+                        swapchainFormat.format, vk::SampleCountFlagBits::e1);
                     swapchainImages.push_back(headlessTextures.back().image);
                     vk::ImageViewCreateInfo view_info({}, swapchainImages.back(), vk::ImageViewType::e2D, swapchainFormat.format,
                         vk::ComponentMapping{}, vk::ImageSubresourceRange(vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1));
@@ -867,7 +871,7 @@ export class window
                 headlessCommandBuffersPre = device->allocateCommandBuffers(vk::CommandBufferAllocateInfo(headlessCommandPool.get(), vk::CommandBufferLevel::ePrimary, swapchainImageCount));
                 headlessCommandBuffersPost = device->allocateCommandBuffers(vk::CommandBufferAllocateInfo(headlessCommandPool.get(), vk::CommandBufferLevel::ePrimary, swapchainImageCount));
             } else {
-                auto formatIt = std::find_if(swapchainSupport.formats.begin(), swapchainSupport.formats.end(), [](auto f){
+                auto formatIt = std::ranges::find_if(swapchainSupport.formats, [](auto f){
                     return f.format == vk::Format::eB8G8R8A8Srgb && f.colorSpace == vk::ColorSpaceKHR::eSrgbNonlinear;
                 });
                 swapchainFormat = formatIt == swapchainSupport.formats.end() ? swapchainSupport.formats[0] : *formatIt;
@@ -1087,27 +1091,49 @@ export class window
                 int c = std::cin.get();
                 if(c == '\e') {
                     c = std::cin.get();
-                    if(c != '[') {
-                        spdlog::warn("Invalid escape sequence: \\e\\x{:02x}", c);
-                        continue;
+                    if(c == '[') {
+                        c = std::cin.get();
+                        switch(c) {
+                            case 'A': // up
+                                emulate_key(Scancode::SDL_SCANCODE_UP, KeyCode::SDLK_UP, Keymod::KMOD_NONE);
+                                break;
+                            case 'B': // down
+                                emulate_key(Scancode::SDL_SCANCODE_DOWN, KeyCode::SDLK_DOWN, Keymod::KMOD_NONE);
+                                break;
+                            case 'C': // right
+                                emulate_key(Scancode::SDL_SCANCODE_RIGHT, KeyCode::SDLK_RIGHT, Keymod::KMOD_NONE);
+                                break;
+                            case 'D': // left
+                                emulate_key(Scancode::SDL_SCANCODE_LEFT, KeyCode::SDLK_LEFT, Keymod::KMOD_NONE);
+                                break;
+                            default:
+                                spdlog::warn("Unknown escape sequence: \\e[\\x5b{}", c);
+                                break;
+                        }
+                    } else if(c == '\x1b') {
+                        emulate_key(Scancode::SDL_SCANCODE_ESCAPE, KeyCode::SDLK_ESCAPE, Keymod::KMOD_NONE);
+                    } else {
+                        spdlog::warn("Unknown escape sequence: \\e{}", c);
                     }
-                    c = std::cin.get();
+                } else {
                     switch(c) {
-                        case 'A': // up
-                            emulate_key(Scancode::SDL_SCANCODE_UP, KeyCode::SDLK_UP, Keymod::KMOD_NONE);
-                            break;
-                        case 'B': // down
-                            emulate_key(Scancode::SDL_SCANCODE_DOWN, KeyCode::SDLK_DOWN, Keymod::KMOD_NONE);
-                            break;
-                        case 'C': // right
-                            emulate_key(Scancode::SDL_SCANCODE_RIGHT, KeyCode::SDLK_RIGHT, Keymod::KMOD_NONE);
-                            break;
-                        case 'D': // left
-                            emulate_key(Scancode::SDL_SCANCODE_LEFT, KeyCode::SDLK_LEFT, Keymod::KMOD_NONE);
-                            break;
-                        default:
-                            spdlog::warn("Unknown escape sequence: \\e[\\x5b{}", c);
-                            break;
+                        case '\n': emulate_key(Scancode::SDL_SCANCODE_RETURN, KeyCode::SDLK_RETURN, Keymod::KMOD_NONE); break;
+                        case '\r': emulate_key(Scancode::SDL_SCANCODE_RETURN, KeyCode::SDLK_RETURN, Keymod::KMOD_NONE); break;
+                        case '\t': emulate_key(Scancode::SDL_SCANCODE_TAB, KeyCode::SDLK_TAB, Keymod::KMOD_NONE); break;
+                        case '\b': emulate_key(Scancode::SDL_SCANCODE_BACKSPACE, KeyCode::SDLK_BACKSPACE, Keymod::KMOD_NONE); break;
+                        default: {
+                            if(c >= 'a' && c <= 'z') {
+                                emulate_key(static_cast<Scancode>(Scancode::SDL_SCANCODE_A + c - 'a'), static_cast<KeyCode>(KeyCode::SDLK_a + c - 'a'), Keymod::KMOD_NONE);
+                            } else if(c >= 'A' && c <= 'Z') {
+                                emulate_key(static_cast<Scancode>(Scancode::SDL_SCANCODE_A + c - 'A'), static_cast<KeyCode>(KeyCode::SDLK_a + c - 'A'), Keymod::KMOD_SHIFT);
+                            } else if(c >= '0' && c <= '9') {
+                                emulate_key(static_cast<Scancode>(Scancode::SDL_SCANCODE_0 + c - '0'), static_cast<KeyCode>(KeyCode::SDLK_0 + c - '0'), Keymod::KMOD_NONE);
+                            } else if(c == ' ') {
+                                emulate_key(Scancode::SDL_SCANCODE_SPACE, KeyCode::SDLK_SPACE, Keymod::KMOD_NONE);
+                            } else {
+                                spdlog::warn("Unknown character: {}", c);
+                            }
+                        }
                     }
                 }
             }
