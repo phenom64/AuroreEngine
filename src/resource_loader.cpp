@@ -219,13 +219,8 @@ namespace dreamrender {
             return false;
         }
 
-        model* mesh = std::get<model*>(task.dst);
-        mesh->create_buffers(vertices.size(), indices.size());
-        for(auto& v : vertices)
-        {
-            mesh->min = glm::min(mesh->min, v.position);
-            mesh->max = glm::max(mesh->max, v.position);
-        }
+        abstract_model* mesh = std::get<abstract_model*>(task.dst);
+        mesh->create_buffers(vertices, indices);
 
         vk::DeviceSize vertexOffset = 0;
         vk::DeviceSize vertexSize = vertices.size() * sizeof(vertex_data);
@@ -233,19 +228,21 @@ namespace dreamrender {
         vk::DeviceSize indexSize = indices.size() * sizeof(uint32_t);
 
         void* buf = allocator.mapMemory(allocation);
-        std::copy(vertices.begin(), vertices.end(), (vertex_data*)((uint8_t*)buf+vertexOffset));
-        std::copy(indices.begin(), indices.end(), (uint32_t*)((uint8_t*)buf+indexOffset));
+        std::ranges::copy(vertices, (vertex_data*)((uint8_t*)buf+vertexOffset));
+        std::ranges::copy(indices, (uint32_t*)((uint8_t*)buf+indexOffset));
         allocator.unmapMemory(allocation);
 
         commandBuffer.begin(vk::CommandBufferBeginInfo());
-        vk::BufferCopy region(0, 0, 0);
-        commandBuffer.copyBuffer(stagingBuffer, mesh->vertexBuffer, region.setSrcOffset(vertexOffset).setSize(vertexSize));
-        commandBuffer.copyBuffer(stagingBuffer, mesh->indexBuffer, region.setSrcOffset(indexOffset).setSize(indexSize));
+        auto [dst_vertex_buffer, dst_vertex_offset] = mesh->get_vertex_buffer();
+        auto [dst_index_buffer, dst_index_offset] = mesh->get_index_buffer();
+
+        commandBuffer.copyBuffer(stagingBuffer, dst_vertex_buffer, vk::BufferCopy{vertexOffset, dst_vertex_offset, vertexSize});
+        commandBuffer.copyBuffer(stagingBuffer, dst_index_buffer, vk::BufferCopy{indexOffset, dst_index_offset, indexSize});
         commandBuffer.end();
 
         std::string name = task.source_name();
-        debugName(device, mesh->vertexBuffer, "Model \""+name+"\" Vertex Buffer");
-        debugName(device, mesh->indexBuffer, "Model \""+name+"\" Index Buffer");
+        debugName(device, dst_vertex_buffer, "Model \""+name+"\" Vertex Buffer"); // TODO: only do this for exclusive buffers
+        debugName(device, dst_index_buffer, "Model \""+name+"\" Index Buffer");
         return true;
     }
 }

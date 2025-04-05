@@ -50,7 +50,7 @@ struct LoadTask
 {
     LoadType type;
     std::variant<std::filesystem::path, LoaderFunction, LoadDataView> src;
-    std::variant<texture*, model*, vk::Image, vk::Buffer> dst;
+    std::variant<texture*, abstract_model*, vk::Image, vk::Buffer> dst;
     std::promise<void> promise;
 
     std::shared_ptr<std::atomic<loading_state>> state = {};
@@ -143,7 +143,7 @@ export class resource_loader
             return f;
         }
 
-        std::future<void> loadModel(model* model, std::filesystem::path filename) {
+        std::future<void> loadModel(abstract_model* model, std::filesystem::path filename) {
             std::future<void> f;
             {
                 std::scoped_lock<std::mutex> l(lock);
@@ -159,7 +159,7 @@ export class resource_loader
             cv.notify_one();
             return f;
         }
-        std::future<void> loadModel(model* model, LoadDataView data) {
+        std::future<void> loadModel(abstract_model* model, LoadDataView data) {
             std::future<void> f;
             {
                 std::scoped_lock<std::mutex> l(lock);
@@ -262,8 +262,8 @@ export class resource_loader
 
                             if(std::holds_alternative<texture*>(task.dst))
                                 std::get<texture*>(task.dst)->loaded = true;
-                            else if(std::holds_alternative<model*>(task.dst))
-                                std::get<model*>(task.dst)->loaded = true;
+                            else if(std::holds_alternative<abstract_model*>(task.dst))
+                                std::get<abstract_model*>(task.dst)->loaded = true;
                         }
 
                         task.state->store(loading_state::loaded);
@@ -276,7 +276,7 @@ export class resource_loader
                     spdlog::debug("[Resource Loader {}] Loaded {} into {} in {} ms", index,
                         task.source_name(),
                         std::holds_alternative<texture*>(task.dst) ? static_cast<void*>(std::get<texture*>(task.dst)->image) :
-                            (std::holds_alternative<model*>(task.dst) ? std::get<model*>(task.dst)->vertexBuffer : nullptr),
+                            (std::holds_alternative<abstract_model*>(task.dst) ? std::get<0>(std::get<abstract_model*>(task.dst)->get_vertex_buffer()) : nullptr),
                         time);
 
                     l.lock();

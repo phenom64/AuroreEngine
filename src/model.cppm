@@ -2,10 +2,11 @@ module;
 
 #include <array>
 #include <atomic>
-#include <cstdint>
 #include <cstddef>
+#include <cstdint>
 #include <limits>
 #include <memory>
+#include <span>
 
 export module dreamrender:model;
 
@@ -32,7 +33,33 @@ struct vertex_data
     }
 };
 
-export struct model
+export struct abstract_model {
+    virtual ~abstract_model();
+    abstract_model() = default;
+    abstract_model(const abstract_model&) = delete;
+    abstract_model(abstract_model&&) = default;
+
+    abstract_model& operator=(const abstract_model&) = delete;
+    abstract_model& operator=(abstract_model&&) = default;
+
+    virtual void create_buffers(std::span<const vertex_data> vertices, std::span<const uint32_t> indices) {
+        this->vertexCount = static_cast<int>(vertices.size());
+        this->indexCount = static_cast<int>(indices.size());
+    };
+    [[nodiscard]] virtual std::tuple<vk::Buffer, vk::DeviceSize> get_vertex_buffer() const = 0;
+    [[nodiscard]] virtual std::tuple<vk::Buffer, vk::DeviceSize> get_index_buffer() const = 0;
+
+    int indexCount = -1;
+    int vertexCount = -1;
+
+    bool loaded = false;
+
+    private:
+        std::shared_ptr<std::atomic<loading_state>> state = std::make_shared<std::atomic<loading_state>>(loading_state::none);
+        friend class resource_loader;
+};
+
+export struct model : public abstract_model
 {
     model(vk::Device device, vma::Allocator allocator)
         : device(device), allocator(allocator) {}
@@ -49,14 +76,8 @@ export struct model
     vk::Buffer indexBuffer;
     vma::Allocation indexAllocation;
 
-    int vertexCount;
-    int indexCount;
-
-    bool loaded = false;
-
-    void create_buffers(int vertexCount, int indexCount) {
-        this->vertexCount = vertexCount;
-        this->indexCount = indexCount;
+    void create_buffers(std::span<const vertex_data> vertices, std::span<const uint32_t> indices) override {
+        abstract_model::create_buffers(vertices, indices);
 
         vk::BufferCreateInfo vertex_info({}, sizeof(vertex_data)*vertexCount,
             vk::BufferUsageFlagBits::eVertexBuffer | vk::BufferUsageFlagBits::eTransferDst, vk::SharingMode::eExclusive);
@@ -66,14 +87,21 @@ export struct model
 
         auto [vb, va] = allocator.createBuffer(vertex_info, alloc_info); vertexBuffer = vb; vertexAllocation = va;
         auto [ib, ia] = allocator.createBuffer(index_info, alloc_info); indexBuffer = ib; indexAllocation = ia;
+
+        for(auto& v : vertices) {
+            min = glm::min(min, v.position);
+            max = glm::max(max, v.position);
+        }
+    }
+    [[nodiscard]] std::tuple<vk::Buffer, vk::DeviceSize> get_vertex_buffer() const override {
+        return {vertexBuffer, 0};
+    }
+    [[nodiscard]] std::tuple<vk::Buffer, vk::DeviceSize> get_index_buffer() const override {
+        return {indexBuffer, 0};
     }
 
     glm::vec3 min = glm::vec3(std::numeric_limits<float>::max());
     glm::vec3 max = glm::vec3(std::numeric_limits<float>::lowest());
-
-    private:
-        std::shared_ptr<std::atomic<loading_state>> state = std::make_shared<std::atomic<loading_state>>(loading_state::none);
-        friend class resource_loader;
 };
 
 }
