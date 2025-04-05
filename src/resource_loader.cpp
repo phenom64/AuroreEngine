@@ -240,9 +240,9 @@ namespace dreamrender {
         commandBuffer.copyBuffer(stagingBuffer, dst_index_buffer, vk::BufferCopy{indexOffset, dst_index_offset, indexSize});
         commandBuffer.end();
 
-        std::string name = task.source_name();
-        debugName(device, dst_vertex_buffer, "Model \""+name+"\" Vertex Buffer"); // TODO: only do this for exclusive buffers
-        debugName(device, dst_index_buffer, "Model \""+name+"\" Index Buffer");
+        // std::string name = task.source_name();
+        // debugName(device, dst_vertex_buffer, "Model \""+name+"\" Vertex Buffer"); // TODO: only do this for exclusive buffers
+        // debugName(device, dst_index_buffer, "Model \""+name+"\" Index Buffer");
         return true;
     }
 }

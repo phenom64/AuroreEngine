@@ -18,7 +18,7 @@ import :utils;
 
 namespace dreamrender {
 
-struct vertex_data
+export struct vertex_data
 {
     glm::vec3 position;
     glm::vec3 normal;

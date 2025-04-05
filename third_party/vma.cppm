@@ -35,7 +35,9 @@ export namespace vma {
     using vma::VirtualBlockCreateInfo;
     using vma::VirtualBlockCreateFlags;
     using vma::VirtualBlockCreateFlagBits;
+    using vma::createVirtualBlock;
     using vma::UniqueVirtualBlock;
+    using vma::createVirtualBlockUnique;
     using vma::VirtualAllocation;
     using vma::VirtualAllocationCreateInfo;
     using vma::VirtualAllocationCreateFlags;
