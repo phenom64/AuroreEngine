@@ -34,7 +34,7 @@ struct vertex_data
 };
 
 export struct abstract_model {
-    virtual ~abstract_model();
+    virtual ~abstract_model() = default;
     abstract_model() = default;
     abstract_model(const abstract_model&) = delete;
     abstract_model(abstract_model&&) = default;
