@@ -2,6 +2,7 @@ module;
 
 #include <glm/glm.hpp>
 #include <glm/ext/matrix_transform.hpp>
+#include <glm/ext/matrix_clip_space.hpp>
 
 export module glm;
 
@@ -24,8 +25,14 @@ export namespace glm {
     using glm::operator-;
     using glm::operator*;
     using glm::operator/;
+    using glm::operator==;
+    using glm::operator!=;
+
+    using glm::radians;
 
     using glm::translate;
     using glm::rotate;
     using glm::scale;
+    using glm::perspective;
+    using glm::lookAt;
 }

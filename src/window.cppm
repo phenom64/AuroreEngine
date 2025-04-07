@@ -782,18 +782,22 @@ export class window
                 .setSampleRateShading(supportedFeatures.sampleRateShading)
                 .setFillModeNonSolid(supportedFeatures.fillModeNonSolid)
                 .setShaderSampledImageArrayDynamicIndexing(supportedFeatures.shaderSampledImageArrayDynamicIndexing)
-                .setWideLines(supportedFeatures.wideLines);
-            vk::PhysicalDeviceDescriptorIndexingFeatures indexingFeatures = vk::PhysicalDeviceDescriptorIndexingFeatures()
+                .setWideLines(supportedFeatures.wideLines)
+                .setMultiDrawIndirect(true)
+                .setDrawIndirectFirstInstance(true);
+            vk::PhysicalDeviceVulkan12Features vulkan12Features = vk::PhysicalDeviceVulkan12Features()
+                .setDescriptorIndexing(supportedIndexingFeatures.descriptorBindingPartiallyBound) // TODO: fix
                 .setDescriptorBindingPartiallyBound(supportedIndexingFeatures.descriptorBindingPartiallyBound)
-                .setDescriptorBindingSampledImageUpdateAfterBind(supportedIndexingFeatures.descriptorBindingSampledImageUpdateAfterBind);
+                .setDescriptorBindingSampledImageUpdateAfterBind(supportedIndexingFeatures.descriptorBindingSampledImageUpdateAfterBind)
+                .setDrawIndirectCount(true);
             vk::PhysicalDeviceFeatures2 features2 = vk::PhysicalDeviceFeatures2()
                 .setFeatures(features)
-                .setPNext(&indexingFeatures);
+                .setPNext(&vulkan12Features);
 
             std::vector<const char*> deviceExtensions = {
                 VK_KHR_MAINTENANCE3_EXTENSION_NAME,
             };
-            if(indexingFeatures.descriptorBindingPartiallyBound) {
+            if(vulkan12Features.descriptorBindingPartiallyBound) {
                 deviceExtensions.push_back(VK_EXT_DESCRIPTOR_INDEXING_EXTENSION_NAME);
             }
             if(!config.headless) {
@@ -805,7 +809,7 @@ export class window
                 .setPEnabledExtensionNames(deviceExtensions)
                 .setPNext(&features2);
             gpuFeatures.features = features;
-            gpuFeatures.indexingFeatures = indexingFeatures;
+            gpuFeatures.indexingFeatures = supportedIndexingFeatures; // TODO: fix
             gpuFeatures.limits = physicalDevice.getProperties().limits;
 
             device = physicalDevice.createDeviceUnique(device_info);

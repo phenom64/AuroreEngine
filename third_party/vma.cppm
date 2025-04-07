@@ -24,6 +24,9 @@ export namespace vma {
 
     using vma::Allocation;
     using vma::AllocationCreateInfo;
+    using vma::AllocationCreateFlags;
+    using vma::AllocationCreateFlagBits;
+    using vma::AllocationInfo;
     using vma::MemoryUsage;
 
     using vma::UniqueBuffer;
@@ -43,6 +46,11 @@ export namespace vma {
     using vma::VirtualAllocationCreateFlags;
     using vma::VirtualAllocationCreateFlagBits;
     using vma::UniqueVirtualAllocation;
+
+    using vma::operator&;
+    using vma::operator^;
+    using vma::operator|;
+    using vma::operator~;
 
     class MemoryMapping {
         public:
