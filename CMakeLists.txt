@@ -19,22 +19,27 @@ endif()
 include(FetchContent)
 
 # The following targets are required (one way or another):
-# - Vulkan::Headers
-# - spdlog::spdlog
 # - SDL2::SDL2
 # - SDL2_image::SDL2_image
 # - SDL2_mixer::SDL2_mixer
 # - Freetype::Freetype
 # - glm::glm
 if(DREAMS_FIND_PACKAGES)
-  find_package(Vulkan REQUIRED)
-  find_package(spdlog REQUIRED)
   find_package(SDL2 REQUIRED)
   find_package(SDL2_image REQUIRED)
   find_package(SDL2_mixer REQUIRED)
   find_package(Freetype REQUIRED)
   find_package(glm REQUIRED)
 endif()
+
+FetchContent_Declare(
+  Vulkan-Hpp
+  GIT_REPOSITORY https://github.com/KhronosGroup/Vulkan-Hpp.git
+  GIT_TAG        v1.4.315
+  GIT_SUBMODULES_RECURSE FALSE
+)
+set(VULKAN_HPP_BUILD_WITH_LOCAL_VULKAN_HPP ON CACHE BOOL "" FORCE)
+FetchContent_MakeAvailable(Vulkan-Hpp)
 
 FetchContent_Declare(
   VulkanMemoryAllocator-Hpp
@@ -44,6 +49,15 @@ FetchContent_Declare(
   PATCH_COMMAND  patch --forward -i ${CMAKE_CURRENT_SOURCE_DIR}/VulkanMemoryAllocator-Hpp.patch || true
 )
 FetchContent_MakeAvailable(VulkanMemoryAllocator-Hpp)
+
+FetchContent_Declare(
+  spdlog
+  GIT_REPOSITORY https://github.com/gabime/spdlog.git
+  GIT_TAG v1.15.3
+  EXCLUDE_FROM_ALL
+)
+set(SPDLOG_ENABLE_PCH ON CACHE BOOL "" FORCE)
+FetchContent_MakeAvailable(spdlog)
 
 add_subdirectory(third_party)
 add_subdirectory(shaders)

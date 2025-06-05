@@ -5,6 +5,8 @@ module;
 #include <spdlog/cfg/argv.h>
 #include <spdlog/sinks/stdout_sinks.h>
 #include <spdlog/sinks/stdout_color_sinks.h>
+#include <spdlog/fmt/fmt.h>
+#include <spdlog/fmt/ranges.h>
 
 export module spdlog;
 

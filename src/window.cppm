@@ -173,8 +173,8 @@ export class window
                 if(config.headless_terminal) {
                     spdlog::info("Switching log to stderr");
                     // https://github.com/gabime/spdlog/wiki/0.-FAQ#switch-the-default-logger-to-stderr
-                    spdlog::set_default_logger(spdlog::stderr_color_st("temp"));
-                    spdlog::set_default_logger(spdlog::stderr_color_st(""));
+                    //spdlog::set_default_logger(spdlog::stderr_color_st("temp")); does not work :(
+                    spdlog::set_default_logger(spdlog::stderr_color_st("stderr"));
 
                     struct termios term{};
                     tcgetattr(STDIN_FILENO, &term);
@@ -598,7 +598,7 @@ export class window
         void initVulkan() {
             std::scoped_lock lock(renderLock);
 
-            static vk::DynamicLoader dl;
+            static vk::detail::DynamicLoader dl;
             PFN_vkGetInstanceProcAddr vkGetInstanceProcAddr = dl.getProcAddress<PFN_vkGetInstanceProcAddr>("vkGetInstanceProcAddr");
             VULKAN_HPP_DEFAULT_DISPATCHER.init(vkGetInstanceProcAddr);
 
@@ -649,7 +649,7 @@ export class window
             if(!config.headless) {
                 VkSurfaceKHR surface_;
                 sdl::vk::CreateSurface(win.get(), instance.get(), &surface_);
-                vk::ObjectDestroy<vk::Instance, vk::DispatchLoaderDynamic> deleter(instance.get(), nullptr, instance.getDispatch());
+                vk::detail::ObjectDestroy<vk::Instance, vk::DispatchLoaderDynamic> deleter(instance.get(), nullptr, instance.getDispatch());
                 surface = vk::UniqueSurfaceKHR(surface_, deleter);
             }
 
@@ -690,7 +690,7 @@ export class window
                 std::string uuidStr = uuidStrStream.str();
 
                 int score = rateDeviceSuitability(dev);
-                spdlog::debug("- Device {} \"{}\" ({}) -> {}", vk::to_string(props.deviceType), props.deviceName, uuidStr, score);
+                spdlog::debug("- Device {} \"{}\" ({}) -> {}", vk::to_string(props.deviceType), std::string{props.deviceName}, uuidStr, score);
 
                 if(device_index.has_value() && device_index.value() == i) {
                     score = std::numeric_limits<int>::max();
@@ -703,7 +703,7 @@ export class window
                 }
 
                 if(score == std::numeric_limits<int>::max()) {
-                    spdlog::info("Force selected device {} \"{}\" ({})", vk::to_string(props.deviceType), props.deviceName, uuidStr);
+                    spdlog::info("Force selected device {} \"{}\" ({})", vk::to_string(props.deviceType), std::string{props.deviceName}, uuidStr);
                 }
                 candidates.insert({score, dev});
             }
@@ -717,7 +717,7 @@ export class window
             deviceProperties = physicalDevice.getProperties();
             queueFamilyIndices = findQueueFamilies(physicalDevice);
             if(!config.headless) swapchainSupport = querySwapChainSupport(physicalDevice);
-            spdlog::info("Using video device {} of type {}", deviceProperties.deviceName, vk::to_string(deviceProperties.deviceType));
+            spdlog::info("Using video device {} of type {}", std::string{deviceProperties.deviceName}, vk::to_string(deviceProperties.deviceType));
 
             vk::SampleCountFlags supportedSamples = deviceProperties.limits.framebufferColorSampleCounts;
             if(!(supportedSamples & config.sampleCount)) {

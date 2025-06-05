@@ -4,7 +4,7 @@ target_sources(${PROJECT_NAME}_VulkanHppModule PUBLIC
   BASE_DIRS ${Vulkan_INCLUDE_DIR}
   FILES ${Vulkan_INCLUDE_DIR}/vulkan/vulkan.cppm
 )
-target_link_libraries(${PROJECT_NAME}_VulkanHppModule PUBLIC Vulkan::Headers)
+vulkan_hpp__setup_vulkan_include(NAME ${PROJECT_NAME}_VulkanHppModule)
 target_compile_definitions(${PROJECT_NAME}_VulkanHppModule PUBLIC VULKAN_HPP_DISPATCH_LOADER_DYNAMIC=1)
 target_compile_options(${PROJECT_NAME}_VulkanHppModule PUBLIC -Wno-deprecated-declarations)
 
