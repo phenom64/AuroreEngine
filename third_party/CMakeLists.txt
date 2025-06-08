@@ -1,8 +1,8 @@
 add_library(${PROJECT_NAME}_VulkanHppModule STATIC)
 target_sources(${PROJECT_NAME}_VulkanHppModule PUBLIC
   FILE_SET CXX_MODULES
-  BASE_DIRS ${Vulkan_INCLUDE_DIR}
-  FILES ${Vulkan_INCLUDE_DIR}/vulkan/vulkan.cppm
+  BASE_DIRS ${vulkan-hpp_SOURCE_DIR}/vulkan
+  FILES ${vulkan-hpp_SOURCE_DIR}/vulkan/vulkan.cppm
 )
 vulkan_hpp__setup_vulkan_include(NAME ${PROJECT_NAME}_VulkanHppModule)
 target_compile_definitions(${PROJECT_NAME}_VulkanHppModule PUBLIC VULKAN_HPP_DISPATCH_LOADER_DYNAMIC=1)
