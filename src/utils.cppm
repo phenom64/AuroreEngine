@@ -180,39 +180,57 @@ void terminal_output(std::span<const char> data, vk::Extent2D extent, std::ostre
     float x_per_c = static_cast<float>(w.ws_xpixel) / static_cast<float>(w.ws_col);
     float y_per_c = static_cast<float>(w.ws_ypixel) / static_cast<float>(w.ws_row);
     float character_ratio = w.ws_xpixel == 0 ? 2.0f : x_per_c / y_per_c;
+    character_ratio /= 2.0;
+
     float fsx = static_cast<float>(extent.width) / w.ws_col;
-    float fsy = static_cast<float>(extent.height) / w.ws_row / character_ratio;
+    float fsy = static_cast<float>(extent.height) / (w.ws_row*2) / character_ratio;
     fsx = std::max(fsx, fsy);
     fsy = fsx * character_ratio;
     int sx = std::ceil(fsx);
     int sy = std::ceil(fsy);
 
-    for(int y=0; y<extent.height; y+=sy)
+    using color = std::tuple<int, int, int>;
+
+    auto get_color = [&](int x, int y) {
+        int tr = 0, tg = 0, tb = 0, t = 0;
+        for(int dy=0; dy<sy && y+dy < extent.height; dy++)
+        {
+            for(int dx=0; dx<sx && x+dx < extent.width; dx++)
+            {
+                unsigned int i = (y+dy)*extent.width*4 + (x+dx)*4;
+                tr += static_cast<unsigned char>(data[i+0]);
+                tg += static_cast<unsigned char>(data[i+1]);
+                tb += static_cast<unsigned char>(data[i+2]);
+                t++;
+            }
+        }
+        if(t == 0) {
+            return color{0, 0, 0}; // No pixels, return black
+        }
+        int r = tr/t, g = tg/t, b = tb/t;
+        return color{r, g, b};
+    };
+
+    for(int y=0; y<extent.height; y+=2*sy)
     {
-        int last_r = -1, last_g = -1, last_b = -1;
+        color last_upper = {-1, -1, -1};
+        color last_lower = {-1, -1, -1};
         for(int x=0; x<extent.width; x+=sx)
         {
-            int tr = 0, tg = 0, tb = 0, t = 0;
-            for(int dy=0; dy<sy && y+dy < extent.height; dy++)
-            {
-                for(int dx=0; dx<sx && x+dx < extent.width; dx++)
-                {
-                    unsigned int i = (y+dy)*extent.width*4 + (x+dx)*4;
-                    tr += static_cast<unsigned char>(data[i+0]);
-                    tg += static_cast<unsigned char>(data[i+1]);
-                    tb += static_cast<unsigned char>(data[i+2]);
-                    t++;
-                }
+            color upper = get_color(x, y);
+            color lower = get_color(x, y+sy);
+
+            if(upper != last_upper) {
+                std::cout << std::format("\x1B[48;2;{};{};{}m",
+                    std::get<0>(upper), std::get<1>(upper), std::get<2>(upper));
+                last_upper = upper;
             }
-            int r = tr/t, g = tg/t, b = tb/t;
-            if(r == last_r && g == last_g && b == last_b) {
-                std::cout << ' ';
-            } else {
-                std::cout << std::format("\x1B[48;2;{};{};{}m ", r, g, b);
-                last_r = r;
-                last_g = g;
-                last_b = b;
+            if(lower != last_lower) {
+                std::cout << std::format("\x1B[38;2;{};{};{}m",
+                    std::get<0>(lower), std::get<1>(lower), std::get<2>(lower));
+                last_lower = lower;
             }
+            std::cout << "\u2584";
         }
         std::cout << "\x1B[0m";
         if(y+sy < extent.height)
