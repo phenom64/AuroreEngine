@@ -169,7 +169,7 @@ std::string type_name(const T& t) {
 
 bool input_available(int fd) {
     struct pollfd fds = {.fd = fd, .events = POLLIN, .revents = 0};
-    return poll(&fds, 1, 0) == 1;
+    return poll(&fds, 1, 0) == 1 && fds.revents & POLLIN;
 }
 
 void terminal_output(std::span<const char> data, vk::Extent2D extent, std::ostream& out) {
