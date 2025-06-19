@@ -951,9 +951,9 @@ export class window
 
             auto props = phyDev.getProperties();
             if(props.deviceType == vk::PhysicalDeviceType::eDiscreteGpu)
-                score += 10000;
+                score += 100000;
             if(props.deviceType == vk::PhysicalDeviceType::eIntegratedGpu)
-                score += 5000;
+                score += 50000;
             score += props.limits.maxImageDimension2D;
 
             if(!findQueueFamilies(phyDev).isComplete())
