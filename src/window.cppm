@@ -290,15 +290,17 @@ export class window
                             if(!config.headless_output_dir.empty()) {
                                 sdl::unique_surface surface{sdl::CreateRGBSurfaceWithFormatFrom(data.data(),
                                     swapchainExtent.width, swapchainExtent.height, 32, swapchainExtent.width*4,
-                                    sdl::PixelFormatEnumVales::ABGR8888)};
+                                    sdl::PixelFormatEnumVales::ARGB8888)};
                                 std::filesystem::path path = config.headless_output_dir / std::vformat(config.headless_output_format, std::make_format_args(totalFrameNumber));
                                 std::string ext = path.extension();
                                 if(ext == ".png") {
                                     sdl::image::SavePNG(surface.get(), path.c_str());
                                 } else if(ext == ".jpg" || ext == ".jpeg") {
                                     sdl::image::SaveJPG(surface.get(), path.c_str(), config.headless_output_quality);
+                                } else if(ext == ".bmp") {
+                                    save_bmp(data, static_cast<int>(swapchainExtent.width), static_cast<int>(swapchainExtent.height), path);
                                 } else {
-                                    spdlog::error("Unknown output format \"{}\". Supported formats are: PNG, JPG", ext);
+                                    spdlog::error("Unknown output format \"{}\". Supported formats are: PNG, JPG, BMP", ext);
                                     spdlog::warn("Disabling output of images!");
                                     config.headless_output_dir.clear();
                                 }
@@ -841,7 +843,10 @@ export class window
                 transferQueues);
 
             if(config.headless) {
-                swapchainFormat = vk::SurfaceFormatKHR{vk::Format::eR8G8B8A8Srgb, vk::ColorSpaceKHR::eSrgbNonlinear};
+                swapchainFormat = vk::SurfaceFormatKHR{
+                    config.headless_terminal ? vk::Format::eR8G8B8A8Srgb : vk::Format::eB8G8R8A8Srgb,
+                    vk::ColorSpaceKHR::eSrgbNonlinear
+                };
                 swapchainExtent = vk::Extent2D{config.width, config.height};
                 swapchainImageCount = MAX_FRAMES_IN_FLIGHT;
                 swapchainPresentMode = vk::PresentModeKHR::eImmediate;

@@ -172,6 +172,46 @@ bool input_available(int fd) {
     return poll(&fds, 1, 0) == 1;
 }
 
+export void save_bmp(std::span<const char> data, int width, int height, const std::filesystem::path& path) {
+    std::ofstream out(path, std::ios::binary);
+    if(!out) {
+        throw std::runtime_error("Failed to open file for writing: " + path.string());
+    }
+
+    struct [[gnu::packed]] bitmap_info {
+        uint32_t biSize{sizeof(bitmap_info)};
+        int32_t biWidth{0}; // Width of the bitmap
+        int32_t biHeight{0}; // Height of the bitmap
+        uint16_t biPlanes{1}; // Number of color planes
+        uint16_t biBitCount{32}; // Bits per pixel
+        uint32_t biCompression{0}; // No compression
+        uint32_t biSizeImage{0}; // Size of the pixel data
+        int32_t biXPelsPerMeter{0}; // Horizontal resolution
+        int32_t biYPelsPerMeter{0}; // Vertical resolution
+        uint32_t biClrUsed{0}; // Number of colors in the palette
+        uint32_t biClrImportant{0}; // Important colors
+    };
+
+    struct [[gnu::packed]] bitmap_header {
+        uint16_t bfType{0x4D42}; // 'BM'
+        uint32_t bfSize{0}; // Size of the file
+        uint32_t bfReserved{0};
+        uint32_t bfOffBits{sizeof(bitmap_header) + sizeof(bitmap_info)}; // Offset to pixel data
+    };
+
+    bitmap_header header = {
+        .bfSize = static_cast<uint32_t>(data.size() + sizeof(bitmap_header))
+    };
+    bitmap_info info = {
+        .biWidth = width,
+        .biHeight = -height, // Note: BMP stores height as negative for top-down
+        .biSizeImage = static_cast<uint32_t>(data.size())
+    };
+    out.write(reinterpret_cast<const char*>(&header), sizeof(header));
+    out.write(reinterpret_cast<const char*>(&info), sizeof(info));
+    out.write(data.data(), data.size());
+}
+
 void terminal_output(std::span<const char> data, vk::Extent2D extent, std::ostream& out) {
     std::cout << "\033[2J\033[0;0H";
     struct winsize w{};
