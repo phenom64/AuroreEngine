@@ -1052,7 +1052,7 @@ export class window
         }
 
         void handle_headless_commands(bool& should_exit) {
-            while(input_available(STDIN_FILENO)) {
+            while(input_available(STDIN_FILENO) && !std::cin.eof()) {
                 std::string line;
                 std::getline(std::cin, line);
 
@@ -1096,7 +1096,7 @@ export class window
             using sdl::Scancode;
             using sdl::KeyCode;
             using sdl::Keymod;
-            while(input_available(STDIN_FILENO)) {
+            while(input_available(STDIN_FILENO) && !std::cin.eof()) {
                 int c = std::cin.get();
                 if(c == '\e') {
                     c = std::cin.get();
