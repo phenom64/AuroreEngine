@@ -22,9 +22,9 @@ struct push_constants {
 export class image_renderer {
     private:
         static constexpr bool check_features(const gpu_features& features) {
-            if(!features.indexingFeatures.descriptorBindingPartiallyBound)
+            if(!features.vulkan12Features.descriptorBindingPartiallyBound)
                 return false;
-            if(!features.indexingFeatures.descriptorBindingSampledImageUpdateAfterBind)
+            if(!features.vulkan12Features.descriptorBindingSampledImageUpdateAfterBind)
                 return false;
             return true;
         }

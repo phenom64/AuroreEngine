@@ -771,13 +771,13 @@ export class window
                     .setPQueuePriorities(priorities.data());
             }
 
-            auto featureChain = physicalDevice.getFeatures2<vk::PhysicalDeviceFeatures2, vk::PhysicalDeviceDescriptorIndexingFeatures>();
+            auto featureChain = physicalDevice.getFeatures2<vk::PhysicalDeviceFeatures2, vk::PhysicalDeviceVulkan12Features>();
             auto supportedFeatures = featureChain.get<vk::PhysicalDeviceFeatures2>().features;
-            auto supportedIndexingFeatures = featureChain.get<vk::PhysicalDeviceDescriptorIndexingFeatures>();
+            auto supportedVulkan12Features = featureChain.get<vk::PhysicalDeviceVulkan12Features>();
             if(std::getenv("DREAMRENDER_NO_FEATURES")) {
                 spdlog::warn("Disabling all device features");
                 supportedFeatures = vk::PhysicalDeviceFeatures();
-                supportedIndexingFeatures = vk::PhysicalDeviceDescriptorIndexingFeatures();
+                supportedVulkan12Features = vk::PhysicalDeviceVulkan12Features();
             }
             vk::PhysicalDeviceFeatures features = vk::PhysicalDeviceFeatures()
                 .setGeometryShader(supportedFeatures.geometryShader)
@@ -785,13 +785,13 @@ export class window
                 .setFillModeNonSolid(supportedFeatures.fillModeNonSolid)
                 .setShaderSampledImageArrayDynamicIndexing(supportedFeatures.shaderSampledImageArrayDynamicIndexing)
                 .setWideLines(supportedFeatures.wideLines)
-                .setMultiDrawIndirect(true)
-                .setDrawIndirectFirstInstance(true);
+                .setMultiDrawIndirect(supportedFeatures.multiDrawIndirect)
+                .setDrawIndirectFirstInstance(supportedFeatures.drawIndirectFirstInstance);
             vk::PhysicalDeviceVulkan12Features vulkan12Features = vk::PhysicalDeviceVulkan12Features()
-                .setDescriptorIndexing(supportedIndexingFeatures.descriptorBindingPartiallyBound) // TODO: fix
-                .setDescriptorBindingPartiallyBound(supportedIndexingFeatures.descriptorBindingPartiallyBound)
-                .setDescriptorBindingSampledImageUpdateAfterBind(supportedIndexingFeatures.descriptorBindingSampledImageUpdateAfterBind)
-                .setDrawIndirectCount(true);
+                .setDescriptorIndexing(supportedVulkan12Features.descriptorBindingPartiallyBound) // TODO: fix
+                .setDescriptorBindingPartiallyBound(supportedVulkan12Features.descriptorBindingPartiallyBound)
+                .setDescriptorBindingSampledImageUpdateAfterBind(supportedVulkan12Features.descriptorBindingSampledImageUpdateAfterBind)
+                .setDrawIndirectCount(supportedVulkan12Features.drawIndirectCount);
             vk::PhysicalDeviceFeatures2 features2 = vk::PhysicalDeviceFeatures2()
                 .setFeatures(features)
                 .setPNext(&vulkan12Features);
@@ -811,7 +811,7 @@ export class window
                 .setPEnabledExtensionNames(deviceExtensions)
                 .setPNext(&features2);
             gpuFeatures.features = features;
-            gpuFeatures.indexingFeatures = supportedIndexingFeatures; // TODO: fix
+            gpuFeatures.vulkan12Features = vulkan12Features;
             gpuFeatures.limits = physicalDevice.getProperties().limits;
 
             device = physicalDevice.createDeviceUnique(device_info);

@@ -49,7 +49,7 @@ namespace {
 
 export struct gpu_features {
     vk::PhysicalDeviceFeatures features;
-    vk::PhysicalDeviceDescriptorIndexingFeatures indexingFeatures;
+    vk::PhysicalDeviceVulkan12Features vulkan12Features;
     vk::PhysicalDeviceLimits limits;
 };
 
