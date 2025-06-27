@@ -264,6 +264,15 @@ export class resource_loader
                                 std::get<texture*>(task.dst)->loaded = true;
                             else if(std::holds_alternative<abstract_model*>(task.dst))
                                 std::get<abstract_model*>(task.dst)->loaded = true;
+
+                            auto t1 = std::chrono::high_resolution_clock::now();
+                            auto time = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
+                            spdlog::debug("[Resource Loader {}] Loaded {} into {} in {} ms", index,
+                                task.source_name(),
+                                std::holds_alternative<texture*>(task.dst) ? static_cast<void*>(std::get<texture*>(task.dst)->image) :
+                                (std::holds_alternative<abstract_model*>(task.dst) ? std::get<0>(std::get<abstract_model*>(task.dst)->get_vertex_buffer()) : nullptr),
+                                time
+                            );
                         }
 
                         task.state->store(loading_state::loaded);
@@ -271,13 +280,6 @@ export class resource_loader
 
                         task.promise.set_value();
                     }
-                    auto t1 = std::chrono::high_resolution_clock::now();
-                    auto time = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
-                    spdlog::debug("[Resource Loader {}] Loaded {} into {} in {} ms", index,
-                        task.source_name(),
-                        std::holds_alternative<texture*>(task.dst) ? static_cast<void*>(std::get<texture*>(task.dst)->image) :
-                            (std::holds_alternative<abstract_model*>(task.dst) ? std::get<0>(std::get<abstract_model*>(task.dst)->get_vertex_buffer()) : nullptr),
-                        time);
 
                     l.lock();
                 }

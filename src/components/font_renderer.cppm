@@ -390,7 +390,6 @@ export class font_renderer {
                     } else if(!glyphRects.contains(c)) {
                         c = '?';
                     }
-                    total_chars++;
 
                     vk::Rect2D g = glyphRects[c];
                     if(compat_mode) {
@@ -417,20 +416,21 @@ export class font_renderer {
                             .size = {}, // unused
                             .color = color};
 
-                        vc[6*i+0] = topLeft;
-                        vc[6*i+1] = bottomLeft;
-                        vc[6*i+2] = topRight;
-                        vc[6*i+3] = topRight;
-                        vc[6*i+4] = bottomLeft;
-                        vc[6*i+5] = bottomRight;
+                        vc[6*total_chars+0] = topLeft;
+                        vc[6*total_chars+1] = bottomLeft;
+                        vc[6*total_chars+2] = topRight;
+                        vc[6*total_chars+3] = topRight;
+                        vc[6*total_chars+4] = bottomLeft;
+                        vc[6*total_chars+5] = bottomRight;
                     } else {
-                        vc[i] = {
+                        vc[total_chars] = {
                             .position = {x, y},
                             .texCoord = {static_cast<float>(g.offset.x)/lineHeight, static_cast<float>(g.offset.y)/lineHeight},
                             .size = {((float)g.extent.width)/lineHeight, ((float)g.extent.height)/lineHeight},
                             .color = color};
                     }
                     x += ((float)g.extent.width)/lineHeight;
+                    total_chars++;
                 }
             }
             {
