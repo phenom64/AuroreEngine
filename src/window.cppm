@@ -109,6 +109,8 @@ export struct window_config {
     vk::PresentModeKHR preferredPresentMode = vk::PresentModeKHR::eFifoRelaxed;
     int fpsLimit = -1;
     vk::SampleCountFlagBits sampleCount = vk::SampleCountFlagBits::e1;
+
+    bool workaround_no_swapchain = false;
 };
 
 export class window
@@ -208,6 +210,9 @@ export class window
                     std::filesystem::create_directories(config.headless_output_dir);
                 }
             }
+            if(const char* c = std::getenv("DREAMRENDER_NO_SWAPCHAIN")) {
+                config.workaround_no_swapchain = (std::string_view{c} == "1");
+            }
             static sdl::initializer sdl_init;
             if(!config.headless) {
                 initWindow();
@@ -255,7 +260,7 @@ export class window
                     using vk::PresentModeKHR::eFifo;
                     using vk::PresentModeKHR::eFifoRelaxed;
                     if(config.fpsLimit > 0 && (config.fpsLimit < refreshRate ||
-                        ~(swapchainPresentMode == eFifo || swapchainPresentMode == eFifoRelaxed)))
+                        !(swapchainPresentMode == eFifo || swapchainPresentMode == eFifoRelaxed)))
                     {
                         auto frame_time = std::chrono::duration<double>(std::chrono::seconds(1)) / config.fpsLimit;
                         auto sleep = frame_time - std::chrono::duration<double>(now - lastFrame);
@@ -271,7 +276,7 @@ export class window
                     spdlog::error("Waiting for inFlightFences[{}] failed with result {}", currentFrame, vk::to_string(r));
 
                 unsigned int imageIndex = 0;
-                if(config.headless) {
+                if(config.headless || config.workaround_no_swapchain) {
                     // This is incredibly weird and hacky, but by some miracle it works.
                     imageIndex = (currentFrame)%swapchainImageCount;
 
@@ -280,17 +285,18 @@ export class window
                         if(r != vk::Result::eSuccess)
                             spdlog::error("Waiting for imagesInFlight[{0}] and headlessFences[{0}] failed with result {1}", imageIndex, vk::to_string(r));
 
-                        if(!config.headless_output_dir.empty() || config.headless_terminal) {
+                        if(!config.headless_output_dir.empty() || config.headless_terminal || config.workaround_no_swapchain) {
                             std::vector<char> data(swapchainExtent.width*swapchainExtent.height*4);
                             r = allocator.copyAllocationToMemory(headlessOutputAllocations[imageIndex].get(),
                                 0, data.data(), swapchainExtent.width*swapchainExtent.height*4);
                             if(r != vk::Result::eSuccess)
                                 spdlog::error("Copying headlessOutputAllocations[{}] to memory failed with result {}", imageIndex, vk::to_string(r));
 
+                            sdl::unique_surface surface{sdl::CreateRGBSurfaceWithFormatFrom(data.data(),
+                                swapchainExtent.width, swapchainExtent.height, 32, swapchainExtent.width*4,
+                                sdl::PixelFormatEnumVales::ARGB8888)};
+
                             if(!config.headless_output_dir.empty()) {
-                                sdl::unique_surface surface{sdl::CreateRGBSurfaceWithFormatFrom(data.data(),
-                                    swapchainExtent.width, swapchainExtent.height, 32, swapchainExtent.width*4,
-                                    sdl::PixelFormatEnumVales::ARGB8888)};
                                 std::filesystem::path path = config.headless_output_dir / std::vformat(config.headless_output_format, std::make_format_args(totalFrameNumber));
                                 std::string ext = path.extension();
                                 if(ext == ".png") {
@@ -304,10 +310,16 @@ export class window
                                     spdlog::warn("Disabling output of images!");
                                     config.headless_output_dir.clear();
                                 }
+                                spdlog::debug("Saved headless output to {}", path.string());
                             }
                             if(config.headless_terminal) {
                                 terminal_output(data, swapchainExtent, std::cout);
                                 std::cout << std::flush;
+                            }
+                            if(config.workaround_no_swapchain) {
+                                auto window_surface = sdl::GetWindowSurface(win.get());
+                                sdl::BlitSurface(surface.get(), nullptr, window_surface, nullptr);
+                                sdl::UpdateWindowSurface(win.get());
                             }
                         }
                     }
@@ -336,7 +348,7 @@ export class window
                     throw std::runtime_error("No renderer set!");
                 current_renderer->render(imageIndex, imageAvailableSemaphores[currentFrame].get(), renderFinishedSemaphores[currentFrame].get(), inFlightFences[currentFrame]);
 
-                if(config.headless) {
+                if(config.headless || config.workaround_no_swapchain) {
                     device->resetFences(headlessFences[imageIndex].get());
 
                     vk::CommandBuffer& commandBuffer = headlessCommandBuffersPost[imageIndex];
@@ -561,7 +573,7 @@ export class window
             }
             win = sdl::unique_window(
                 sdl::CreateWindow(config.title.c_str(), rect.x, rect.y, rect.w, rect.h,
-                    SDL_WINDOW_SHOWN | (config.fullscreen ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0) | SDL_WINDOW_VULKAN)
+                    SDL_WINDOW_SHOWN | (config.fullscreen ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0) | (config.workaround_no_swapchain ? 0 : SDL_WINDOW_VULKAN))
             );
             spdlog::info("Created window ({}x{} @ {}:{}) on monitor \"{}\"", rect.w, rect.h, rect.x, rect.y,
                 sdl::GetDisplayName(config.display_index));
@@ -616,7 +628,7 @@ export class window
                 vk::KHRGetPhysicalDeviceProperties2ExtensionName,
             };
 
-            if(!config.headless) {
+            if(!config.headless && !config.workaround_no_swapchain) {
                 uint32_t sdlExtensionCount = 0;
                 sdl::vk::GetInstanceExtensions(win.get(), &sdlExtensionCount, nullptr);
 
@@ -648,7 +660,7 @@ export class window
     #endif
             spdlog::info("Initialized Vulkan with {} layer(s) and {} extension(s)", layers.size(), extensions.size());
 
-            if(!config.headless) {
+            if(!config.headless && !config.workaround_no_swapchain) {
                 VkSurfaceKHR surface_;
                 sdl::vk::CreateSurface(win.get(), instance.get(), &surface_);
                 vk::detail::ObjectDestroy<vk::Instance, vk::DispatchLoaderDynamic> deleter(instance.get(), nullptr, instance.getDispatch());
@@ -718,7 +730,7 @@ export class window
 
             deviceProperties = physicalDevice.getProperties();
             queueFamilyIndices = findQueueFamilies(physicalDevice);
-            if(!config.headless) swapchainSupport = querySwapChainSupport(physicalDevice);
+            if(!config.headless && !config.workaround_no_swapchain) swapchainSupport = querySwapChainSupport(physicalDevice);
             spdlog::info("Using video device {} of type {}", std::string{deviceProperties.deviceName}, vk::to_string(deviceProperties.deviceType));
 
             vk::SampleCountFlags supportedSamples = deviceProperties.limits.framebufferColorSampleCounts;
@@ -802,7 +814,7 @@ export class window
             if(vulkan12Features.descriptorBindingPartiallyBound) {
                 deviceExtensions.push_back(VK_EXT_DESCRIPTOR_INDEXING_EXTENSION_NAME);
             }
-            if(!config.headless) {
+            if(!config.headless && !config.workaround_no_swapchain) {
                 deviceExtensions.push_back(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
             }
             vk::DeviceCreateInfo device_info = vk::DeviceCreateInfo()
@@ -842,15 +854,17 @@ export class window
                 queueFamilyIndices.graphicsFamily.value(),
                 transferQueues);
 
-            if(config.headless) {
+            if(config.headless || config.workaround_no_swapchain) {
                 swapchainFormat = vk::SurfaceFormatKHR{
-                    config.headless_terminal ? vk::Format::eR8G8B8A8Srgb : vk::Format::eB8G8R8A8Srgb,
+                    (config.headless_terminal && !config.workaround_no_swapchain) ? vk::Format::eR8G8B8A8Srgb : vk::Format::eB8G8R8A8Srgb,
                     vk::ColorSpaceKHR::eSrgbNonlinear
                 };
-                swapchainExtent = vk::Extent2D{config.width, config.height};
+                swapchainExtent = config.workaround_no_swapchain ? vk::Extent2D{window_width, window_height} : vk::Extent2D{config.width, config.height};
                 swapchainImageCount = MAX_FRAMES_IN_FLIGHT;
                 swapchainPresentMode = vk::PresentModeKHR::eImmediate;
                 swapchainFinalLayout = vk::ImageLayout::eTransferSrcOptimal;
+                spdlog::debug("Using fake swapchain with {} images of format {}, extent {}x{}",
+                    swapchainImageCount, vk::to_string(swapchainFormat.format), swapchainExtent.width, swapchainExtent.height);
 
                 swapchainImages.clear();
                 swapchainImageViews.clear();
@@ -973,11 +987,11 @@ export class window
                     indices.graphicsFamily = index;
                 else if(family.queueFlags & vk::QueueFlagBits::eTransfer)
                     indices.transferFamily = index;
-                if(!config.headless && phyDev.getSurfaceSupportKHR(index, surface.get()))
+                if(!config.headless && !config.workaround_no_swapchain && phyDev.getSurfaceSupportKHR(index, surface.get()))
                     indices.presentFamily = index;
                 index++;
             }
-            if(config.headless) {
+            if(config.headless || config.workaround_no_swapchain) {
                 indices.presentFamily = indices.graphicsFamily;
             }
 

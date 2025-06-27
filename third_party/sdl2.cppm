@@ -21,6 +21,7 @@ export module sdl2;
 
 export namespace sdl {
     ALIAS_FUNCTION(BlitScaled, SDL_BlitScaled);
+    ALIAS_FUNCTION(BlitSurface, SDL_BlitSurface);
     ALIAS_FUNCTION(ConvertSurfaceFormat, SDL_ConvertSurfaceFormat);
     ALIAS_FUNCTION(CreateRGBSurface, SDL_CreateRGBSurface);
     ALIAS_FUNCTION(CreateRGBSurfaceWithFormatFrom, SDL_CreateRGBSurfaceWithFormatFrom);
@@ -39,6 +40,7 @@ export namespace sdl {
     ALIAS_FUNCTION(GetKeyboardState, SDL_GetKeyboardState);
     ALIAS_FUNCTION(GetTicks, SDL_GetTicks);
     ALIAS_FUNCTION(GetWindowDisplayMode, SDL_GetWindowDisplayMode);
+    ALIAS_FUNCTION(GetWindowSurface, SDL_GetWindowSurface);
     ALIAS_FUNCTION(HapticClose, SDL_HapticClose);
     ALIAS_FUNCTION(HapticOpenFromJoystick, SDL_HapticOpenFromJoystick);
     ALIAS_FUNCTION(HapticRumbleInit, SDL_HapticRumbleInit);
@@ -57,6 +59,7 @@ export namespace sdl {
     ALIAS_FUNCTION(RaiseWindow, SDL_RaiseWindow);
     ALIAS_FUNCTION(RWFromConstMem, SDL_RWFromConstMem);
     ALIAS_FUNCTION(SetHint, SDL_SetHint);
+    ALIAS_FUNCTION(UpdateWindowSurface, SDL_UpdateWindowSurface);
     ALIAS_FUNCTION(WaitEvent, SDL_WaitEvent);
     ALIAS_FUNCTION(WaitEventTimeout, SDL_WaitEventTimeout);
 
