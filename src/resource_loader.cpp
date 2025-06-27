@@ -160,23 +160,23 @@ namespace dreamrender {
             std::string type;
             is >> type;
             if(type=="v") {
-                float x, y, z;
+                float x{}, y{}, z{};
                 is >> x >> y >> z;
-                positions.push_back({x, y, z});
+                positions.emplace_back(x, y, z);
             } else if(type=="vt") {
-                float u, v;
+                float u{}, v{};
                 is >> u >> v;
-                texCoords.push_back({u, -v});
+                texCoords.emplace_back(u, -v);
             } else if(type=="vn") {
-                float x, y, z;
+                float x{}, y{}, z{};
                 is >> x >> y >> z;
-                normals.push_back({x, y, z});
+                normals.emplace_back(x, y, z);
             } else if(type=="f") {
                 std::array<std::string, 3> args;
                 is >> args[0] >> args[1] >> args[2];
-                for(int i=0; i<3; i++) {
-                    std::stringstream s(args[i]);
-                    int vertex, uv, normal;
+                for(const auto& a : args) {
+                    std::stringstream s(a);
+                    int vertex{}, uv{}, normal{};
 
                     s >> vertex;
                     s.ignore(1);
@@ -184,15 +184,14 @@ namespace dreamrender {
                     s.ignore(1);
                     s >> normal;
 
-                    cindices.push_back({vertex-1, uv-1, normal-1});
+                    cindices.emplace_back(vertex-1, uv-1, normal-1);
                 }
             }
         }
 
         std::vector<std::tuple<int, int, int>> indexCombos;
-        for(int i=0; i<cindices.size(); i++) {
-            auto index = cindices[i];
-            auto p = std::find(indexCombos.begin(), indexCombos.end(), index);
+        for(auto index : cindices) {
+            auto p = std::ranges::find(indexCombos, index);
             if(p == indexCombos.end()) {
                 indices.push_back(vertices.size());
                 auto [pos, tex, nor] = index;

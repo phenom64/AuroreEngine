@@ -22,6 +22,7 @@ export module sdl2;
 export namespace sdl {
     ALIAS_FUNCTION(BlitScaled, SDL_BlitScaled);
     ALIAS_FUNCTION(BlitSurface, SDL_BlitSurface);
+    ALIAS_FUNCTION(ClearError, SDL_ClearError);
     ALIAS_FUNCTION(ConvertSurfaceFormat, SDL_ConvertSurfaceFormat);
     ALIAS_FUNCTION(CreateRGBSurface, SDL_CreateRGBSurface);
     ALIAS_FUNCTION(CreateRGBSurfaceWithFormatFrom, SDL_CreateRGBSurfaceWithFormatFrom);
