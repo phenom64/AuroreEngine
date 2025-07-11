@@ -3,6 +3,8 @@ module;
 #include <array>
 #include <cassert>
 #include <cmath>
+#include <cstring>
+#include <cuchar>
 #include <future>
 #include <memory>
 #include <string_view>
@@ -21,6 +23,7 @@ import :shaders;
 import :texture;
 import :utils;
 
+import spdlog;
 import vulkan_hpp;
 import vma;
 
@@ -181,6 +184,7 @@ export class font_renderer {
 
                     char32_t ch = startChar;
                     FT_Face ftFace = go.ftFace->get();
+                    FT_Select_Charmap(ftFace, ft_encoding_unicode);
                     for(int r=0; r<rows; r++) {
                         for(int c=0; c<columns; c++) {
                             if(ch > endChar) {
@@ -380,9 +384,18 @@ export class font_renderer {
                 VertexCharacter* vc = vertexPointers[frame] + compat_factor*vertexOffsets[frame];
                 float x = 0;
                 float y = 0;
-                for(int i=0; i<text.size(); i++)
+                std::mbstate_t mb{};
+                for(int i=0; i<text.size();)
                 {
-                    char32_t c = text[i];
+                    char32_t c{};
+                    int j = std::mbrtoc32(&c, text.data()+i, text.size()-i, &mb);
+                    if(j < 0) {
+                        spdlog::error("Failed to convert character at index {}: {}", i, std::strerror(errno));
+                        break;
+                    } else {
+                        i += j;
+                    }
+
                     if(c == '\n') {
                         y += 1;
                         x = 0;
