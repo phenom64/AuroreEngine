@@ -388,6 +388,7 @@ export class font_renderer {
                 for(int i=0; i<text.size();)
                 {
                     char32_t c{};
+#if __linux__ // for some reason this causes a crash in WINE, so for now this is Linux only
                     int j = std::mbrtoc32(&c, text.data()+i, text.size()-i, &mb);
                     if(j < 0) {
                         spdlog::error("Failed to convert character at index {}: {}", i, std::strerror(errno));
@@ -395,6 +396,10 @@ export class font_renderer {
                     } else {
                         i += j;
                     }
+#else
+                    c = static_cast<char32_t>(text[i]);
+                    i++;
+#endif
 
                     if(c == '\n') {
                         y += 1;

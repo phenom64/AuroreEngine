@@ -13,9 +13,12 @@ module;
 #ifdef __GNUG__
 #include <cxxabi.h>
 #endif
+
+#if __linux__
 #include <poll.h>
 #include <sys/ioctl.h>
 #include <unistd.h>
+#endif
 
 export module dreamrender:utils;
 
@@ -168,8 +171,12 @@ std::string type_name(const T& t) {
 }
 
 bool input_available(int fd) {
+#if __linux__
     struct pollfd fds = {.fd = fd, .events = POLLIN, .revents = 0};
     return poll(&fds, 1, 0) == 1 && fds.revents & POLLIN;
+#else
+    return false;
+#endif
 }
 
 export void save_bmp(std::span<const char> data, int width, int height, const std::filesystem::path& path) {
@@ -214,8 +221,17 @@ export void save_bmp(std::span<const char> data, int width, int height, const st
 
 void terminal_output(std::span<const char> data, vk::Extent2D extent, std::ostream& out) {
     std::cout << "\033[2J\033[0;0H";
+#if __linux__
     struct winsize w{};
     ioctl(STDOUT_FILENO, TIOCGWINSZ, &w);
+#else
+    struct winsize {
+        unsigned short ws_row;
+        unsigned short ws_col;
+        unsigned short ws_xpixel;
+        unsigned short ws_ypixel;
+    } w = {24, 80, 640, 480};
+#endif
 
     float x_per_c = static_cast<float>(w.ws_xpixel) / static_cast<float>(w.ws_col);
     float y_per_c = static_cast<float>(w.ws_ypixel) / static_cast<float>(w.ws_row);

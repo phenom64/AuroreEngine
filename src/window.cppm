@@ -13,11 +13,15 @@ module;
 #include <optional>
 #include <set>
 #include <thread>
+#include <utility>
 #include <vector>
 
-#include <termios.h>
 #include <vulkan/vulkan_core.h>
 #include <vulkan/vulkan_hpp_macros.hpp>
+
+#if __linux__
+#include <termios.h>
+#endif
 
 export module dreamrender:window;
 
@@ -113,10 +117,20 @@ export struct window_config {
     bool workaround_no_swapchain = false;
 };
 
+static std::filesystem::path get_cache_dir() {
+#if __linux__
+    return std::filesystem::path{std::getenv("HOME")} / ".cache" / "dreamrender";
+#elif defined(_WIN32)
+    return std::filesystem::path{std::getenv("LOCALAPPDATA")} / "DreamRender" / "Cache";
+#else
+    return std::filesystem::temp_directory_path() / "dreamrender";
+#endif
+}
+
 export class window
 {
     public:
-        window(window_config config) : config(config) {}
+        window(window_config config) : config(std::move(config)) {}
         window(window_config&& config) : config(std::move(config)) {}
         ~window() {
             spdlog::debug("Destroying window");
@@ -126,8 +140,7 @@ export class window
             {
                 auto data = device->getPipelineCacheData(pipelineCache.get());
                 spdlog::debug("Saving pipeline cache of {} bytes", data.size()*sizeof(decltype(data)::value_type));
-                std::filesystem::path cache_dir = std::filesystem::path{std::getenv("HOME")} / ".cache";
-                auto path = cache_dir / "dreamrender" / config.name / "pipeline_cache.bin";
+                auto path = get_cache_dir() / config.name / "pipeline_cache.bin";
 
                 if(!std::filesystem::exists(path.parent_path()))
                     std::filesystem::create_directories(path.parent_path());
@@ -178,10 +191,12 @@ export class window
                     //spdlog::set_default_logger(spdlog::stderr_color_st("temp")); does not work :(
                     spdlog::set_default_logger(spdlog::stderr_color_st("stderr"));
 
+#if __linux__
                     struct termios term{};
                     tcgetattr(STDIN_FILENO, &term);
                     term.c_lflag &= ~ICANON & ~ECHO;
                     tcsetattr(STDIN_FILENO, TCSANOW, &term);
+#endif
 
                     static std::vector<char> buffer(32*1024*1024); // 32 MiB buffer, so it is smooth
                     std::setvbuf(stdout, buffer.data(), _IOFBF, buffer.size());
@@ -298,11 +313,11 @@ export class window
 
                             if(!config.headless_output_dir.empty()) {
                                 std::filesystem::path path = config.headless_output_dir / std::vformat(config.headless_output_format, std::make_format_args(totalFrameNumber));
-                                std::string ext = path.extension();
+                                std::string ext = path.extension().string();
                                 if(ext == ".png") {
-                                    sdl::image::SavePNG(surface.get(), path.c_str());
+                                    sdl::image::SavePNG(surface.get(), path.string().c_str());
                                 } else if(ext == ".jpg" || ext == ".jpeg") {
-                                    sdl::image::SaveJPG(surface.get(), path.c_str(), config.headless_output_quality);
+                                    sdl::image::SaveJPG(surface.get(), path.string().c_str(), config.headless_output_quality);
                                 } else if(ext == ".bmp") {
                                     save_bmp(data, static_cast<int>(swapchainExtent.width), static_cast<int>(swapchainExtent.height), path);
                                 } else {
@@ -555,7 +570,7 @@ export class window
         };
         std::map<sdl::JoystickID, std::unique_ptr<sdl::GameController, sdl_controller_closer>> controllers;
 
-#ifndef NDEBUG
+#if !defined(NDEBUG) && __linux__
         vk::UniqueDebugUtilsMessengerEXT debugMessenger;
 #endif
     private:
@@ -617,12 +632,12 @@ export class window
             VULKAN_HPP_DEFAULT_DISPATCHER.init(vkGetInstanceProcAddr);
 
             std::vector<const char*> layers = {
-                #ifndef NDEBUG
+                #if !defined(NDEBUG) && __linux__ // WINE does not support validation layers
                     "VK_LAYER_KHRONOS_validation",
                 #endif
             };
             std::vector<const char*> extensions = {
-                #ifndef NDEBUG
+                #if !defined(NDEBUG) && __linux__
                     vk::EXTDebugUtilsExtensionName,
                 #endif
                 vk::KHRGetPhysicalDeviceProperties2ExtensionName,
@@ -652,12 +667,12 @@ export class window
             instance = vk::createInstanceUnique(inst_info);
             VULKAN_HPP_DEFAULT_DISPATCHER.init(*instance);
 
-    #ifndef NDEBUG
+#if !defined(NDEBUG) && __linux__
             debugMessenger = instance->createDebugUtilsMessengerEXTUnique(vk::DebugUtilsMessengerCreateInfoEXT({},
                     vk::DebugUtilsMessageSeverityFlagBitsEXT::eError | vk::DebugUtilsMessageSeverityFlagBitsEXT::eWarning | vk::DebugUtilsMessageSeverityFlagBitsEXT::eVerbose | vk::DebugUtilsMessageSeverityFlagBitsEXT::eInfo,
                     vk::DebugUtilsMessageTypeFlagBitsEXT::eGeneral | vk::DebugUtilsMessageTypeFlagBitsEXT::eValidation | vk::DebugUtilsMessageTypeFlagBitsEXT::ePerformance,
                     debugCallback));
-    #endif
+#endif
             spdlog::info("Initialized Vulkan with {} layer(s) and {} extension(s)", layers.size(), extensions.size());
 
             if(!config.headless && !config.workaround_no_swapchain) {
@@ -930,7 +945,7 @@ export class window
                 imagesInFlight.push_back(vk::Fence());
             }
 
-    #ifndef NDEBUG
+#if !defined(NDEBUG) && __linux__
             debugName(device.get(), graphicsQueue, "Graphics Queue");
             debugName(device.get(), presentQueue, "Present Queue");
             for(int i=0; i<swapchainImageCount; i++)
@@ -939,11 +954,10 @@ export class window
                 debugName(device.get(), renderFinishedSemaphores[i].get(), "Render finished Semaphore #"+std::to_string(i));
                 debugName(device.get(), fences[i].get(), "Render Fence #"+std::to_string(i));
             }
-    #endif
+#endif
 
             {
-                std::filesystem::path cache_dir = std::filesystem::path{std::getenv("HOME")} / ".cache";
-                auto path = cache_dir / "dreamrender" / config.name / "pipeline_cache.bin";
+                auto path = get_cache_dir() / config.name / "pipeline_cache.bin";
 
                 std::ifstream in(path, std::ios::binary);
                 if(in) {

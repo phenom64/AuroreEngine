@@ -18,7 +18,7 @@ target_link_libraries(${PROJECT_NAME}_sdl2Module PUBLIC SDL2::SDL2 SDL2_mixer::S
 
 add_library(${PROJECT_NAME}_glmModule STATIC)
 target_sources(${PROJECT_NAME}_glmModule PUBLIC FILE_SET CXX_MODULES FILES glm.cppm)
-target_include_directories(${PROJECT_NAME}_glmModule PRIVATE glm::glm)
+target_link_libraries(${PROJECT_NAME}_glmModule PRIVATE glm::glm)
 
 add_library(${PROJECT_NAME}_vmaModule STATIC)
 target_sources(${PROJECT_NAME}_vmaModule PUBLIC FILE_SET CXX_MODULES FILES vma.cppm)

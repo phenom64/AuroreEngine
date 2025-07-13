@@ -61,7 +61,7 @@ namespace dreamrender {
             if(std::holds_alternative<std::filesystem::path>(task.src))
             {
                 const auto& path = std::get<std::filesystem::path>(task.src);
-                surface = sdl::unique_surface{sdl::image::Load(path.c_str())};
+                surface = sdl::unique_surface{sdl::image::Load(path.string().c_str())};
             }
             else
             {
