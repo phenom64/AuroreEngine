@@ -35,7 +35,7 @@ enum class LoadType
     Model
 };
 
-#if __cpp_lib_move_only_function >= 202110L
+#if __cpp_lib_move_only_function >= 202110L && __linux__
 export using LoaderFunction = std::move_only_function<void(uint8_t*, size_t)>;
 #else
 export using LoaderFunction = std::function<void(uint8_t*, size_t)>;

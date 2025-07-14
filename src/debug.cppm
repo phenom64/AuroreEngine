@@ -13,7 +13,7 @@ namespace dreamrender {
 export template<class T>
 void debugName(vk::Device device, T object, const std::string& name)
 {
-#ifndef NDEBUG
+#if !defined(NDEBUG) && __linux__
     using CType = typename T::CType;
     vk::DebugUtilsObjectNameInfoEXT name_info(object.objectType, (uint64_t)((CType)object), name.c_str());
     vk::Result result = device.setDebugUtilsObjectNameEXT(&name_info);
@@ -30,7 +30,7 @@ export enum class debug_tag : uint64_t
 export template<class T>
 void debugTag(vk::Device device, T object, debug_tag tag, std::string value)
 {
-#ifndef NDEBUG
+#if !defined(NDEBUG) && __linux__
     using CType = typename T::CType;
     vk::DebugUtilsObjectTagInfoEXT tag_info(object.objectType, (uint64_t)((CType)object), (uint64_t)tag, value.size()+1, value.c_str());
     vk::Result result = device.setDebugUtilsObjectTagEXT(&tag_info);

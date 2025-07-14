@@ -161,7 +161,7 @@ export class font_renderer {
             lineHeight = static_cast<float>(maxHeight);
 
             struct guarantee_order {
-#if __cpp_lib_move_only_function >= 202110L
+#if __cpp_lib_move_only_function >= 202110L && __linux__
                 std::unique_ptr<ft_library_wrapper> ftManager;
                 std::unique_ptr<ft_face_wrapper> ftFace;
 #else
