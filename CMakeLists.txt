@@ -7,7 +7,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_SCAN_FOR_MODULES ON)
 add_compile_options(-Wno-nullability-completeness)
 
-option(DREAMS_BUILD_EXAMPLES "Build examples" ON)
+option(DREAMS_BUILD_EXAMPLES "Build examples" OFF)
 option(DREAMS_BUILD_WITH_POSIX_THREADS "Build with POSIX threads" OFF)
 option(DREAMS_ALIAS_MODULES "CMake: Alias C++ module libraries" ON)
 option(DREAMS_FIND_PACKAGES "CMake: Find packages (if you disable this, you need to provide them)" ON)
