@@ -36,7 +36,7 @@ endif()
 FetchContent_Declare(
   Vulkan-Hpp
   GIT_REPOSITORY https://github.com/KhronosGroup/Vulkan-Hpp.git
-  GIT_TAG        v1.4.321
+  GIT_TAG        v1.4.325
   GIT_SUBMODULES_RECURSE FALSE
 )
 set(VULKAN_HPP_BUILD_WITH_LOCAL_VULKAN_HPP ON CACHE BOOL "" FORCE)
