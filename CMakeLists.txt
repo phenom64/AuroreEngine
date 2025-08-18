@@ -30,14 +30,15 @@ if(DREAMS_FIND_PACKAGES)
   find_package(SDL2_mixer REQUIRED)
   find_package(Freetype REQUIRED)
   find_package(glm REQUIRED)
+  find_package(Vulkan REQUIRED)
 endif()
 
-FetchContent_Declare(
-  Vulkan-Hpp
-  GIT_REPOSITORY https://github.com/KhronosGroup/Vulkan-Hpp.git
-  GIT_TAG        v1.4.315
-  GIT_SUBMODULES_RECURSE FALSE
-)
+#FetchContent_Declare(
+#  Vulkan-Hpp
+#  GIT_REPOSITORY https://github.com/KhronosGroup/Vulkan-Hpp.git
+#  GIT_TAG        v1.4.315
+#  GIT_SUBMODULES_RECURSE FALSE
+#)
 set(VULKAN_HPP_BUILD_WITH_LOCAL_VULKAN_HPP ON CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(Vulkan-Hpp)
 
