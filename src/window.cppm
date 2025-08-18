@@ -1,6 +1,7 @@
 module;
 
 #ifdef __unix__
+#include <termios.h>
 #include <unistd.h> // For STDIN_FILENO
 #endif
 
@@ -22,10 +23,6 @@ module;
 
 #include <vulkan/vulkan_core.h>
 #include <vulkan/vulkan_hpp_macros.hpp>
-
-#if __linux__
-#include <termios.h>
-#endif
 
 export module dreamrender:window;
 
