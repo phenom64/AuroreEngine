@@ -1,6 +1,6 @@
 module;
 
-#ifdef __unix__
+#if defined(__unix__) || defined(__APPLE__)
 #include <termios.h>
 #include <unistd.h> // For STDIN_FILENO
 #endif
