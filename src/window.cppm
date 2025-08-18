@@ -1,5 +1,9 @@
 module;
 
+#ifdef __unix__
+#include <unistd.h> // For STDIN_FILENO
+#endif
+
 #include <algorithm>
 #include <cstdint>
 #include <chrono>
