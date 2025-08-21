@@ -665,7 +665,7 @@ export class window
                 .setApplicationVersion(config.version)
                 .setPEngineName("dreamrender")
                 .setEngineVersion(1)
-                .setApiVersion(vk::makeApiVersion(1, 2, 0, 0));
+                .setApiVersion(vk::makeApiVersion(0, 1, 2, 0));
             auto const inst_info = vk::InstanceCreateInfo()
                 .setPApplicationInfo(&app)
                 .setPEnabledLayerNames(layers)
@@ -842,6 +842,9 @@ export class window
             if(!config.headless && !config.workaround_no_swapchain) {
                 deviceExtensions.push_back(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
             }
+            #if defined(__APPLE__)
+            deviceExtensions.push_back(vk::KHRPortabilitySubsetExtensionName);
+            #endif
             #if defined(__APPLE__)
             deviceExtensions.push_back(VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME);
             #endif
