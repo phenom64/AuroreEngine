@@ -653,6 +653,11 @@ export class window
                 std::ranges::copy(sdlExtensions, std::back_inserter(extensions));
             }
 
+            #if defined(__APPLE__)
+            // Enable portability enumeration for MoltenVK
+            extensions.push_back(vk::KHRPortabilityEnumerationExtensionName);
+            #endif
+
             spdlog::debug("Using extensions: {}", fmt::join(extensions, ", "));
 
             auto const app = vk::ApplicationInfo()
@@ -664,7 +669,11 @@ export class window
             auto const inst_info = vk::InstanceCreateInfo()
                 .setPApplicationInfo(&app)
                 .setPEnabledLayerNames(layers)
-                .setPEnabledExtensionNames(extensions);
+                .setPEnabledExtensionNames(extensions)
+                #if defined(__APPLE__)
+                .setFlags(vk::InstanceCreateFlagBits::eEnumeratePortabilityKHR)
+                #endif
+                ;
             instance = vk::createInstanceUnique(inst_info);
             VULKAN_HPP_DEFAULT_DISPATCHER.init(*instance);
 
@@ -833,6 +842,9 @@ export class window
             if(!config.headless && !config.workaround_no_swapchain) {
                 deviceExtensions.push_back(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
             }
+            #if defined(__APPLE__)
+            deviceExtensions.push_back(VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME);
+            #endif
             vk::DeviceCreateInfo device_info = vk::DeviceCreateInfo()
                 .setQueueCreateInfos(queueInfos)
                 .setPEnabledLayerNames(layers)
