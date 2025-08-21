@@ -834,7 +834,7 @@ export class window
                 .setPNext(&vulkan12Features);
 
             std::vector<const char*> deviceExtensions = {
-                VK_KHR_MAINTENANCE3_EXTENSION_NAME,
+                VK_KHR_MAINTENANCE_3_EXTENSION_NAME,
             };
             if(vulkan12Features.descriptorBindingPartiallyBound) {
                 deviceExtensions.push_back(VK_EXT_DESCRIPTOR_INDEXING_EXTENSION_NAME);
@@ -844,9 +844,6 @@ export class window
             }
             #if defined(__APPLE__)
             deviceExtensions.push_back("VK_KHR_portability_subset");
-            #endif
-            #if defined(__APPLE__)
-            deviceExtensions.push_back(VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME);
             #endif
             vk::DeviceCreateInfo device_info = vk::DeviceCreateInfo()
                 .setQueueCreateInfos(queueInfos)
