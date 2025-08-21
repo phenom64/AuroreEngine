@@ -843,7 +843,7 @@ export class window
                 deviceExtensions.push_back(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
             }
             #if defined(__APPLE__)
-            deviceExtensions.push_back(vk::KHRPortabilitySubsetExtensionName);
+            deviceExtensions.push_back("VK_KHR_portability_subset");
             #endif
             #if defined(__APPLE__)
             deviceExtensions.push_back(VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME);
