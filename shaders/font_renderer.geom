@@ -25,11 +25,12 @@ void main()
 		vec2(1, 1)
 	);
 
-	for (int i = 0; i < 4; i++)
-	{
-		gl_Position = uni.matrix * vec4(inPosition[0] + offsets[i] * inSize[0], 0.0, 1.0);
-		outTexCoord = inTexCoord[0] + offsets[i] * inSize[0];
-		outColor = inColor[0];
-		EmitVertex();
-	}
+    for (int i = 0; i < 4; i++)
+    {
+        gl_Position = uni.matrix * vec4(inPosition[0] + offsets[i] * inSize[0], 0.0, 1.0);
+        // Normalize UVs using textureSize (passed in lineHeight units)
+        outTexCoord = (inTexCoord[0] + offsets[i] * inSize[0]) / uni.textureSize;
+        outColor = inColor[0];
+        EmitVertex();
+    }
 }

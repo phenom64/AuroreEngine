@@ -14,6 +14,6 @@ layout(location = 0) out vec4 outColor;
 
 void main()
 {
-	vec4 c = texture(tex, inTexCoord/uni.textureSize);
+	vec4 c = texture(tex, inTexCoord);
 	outColor = inColor*c;
 }

@@ -42,3 +42,13 @@ add_dependencies(dreamrender ${PROJECT_NAME}_shaders)
 target_compile_options(dreamrender PRIVATE --embed-dir=${CMAKE_CURRENT_BINARY_DIR}/../)
 
 add_library(dreams::dreamrender ALIAS dreamrender)
+
+# Optional HarfBuzz shaping support
+find_package(HarfBuzz QUIET)
+if(HarfBuzz_FOUND)
+  target_link_libraries(dreamrender PUBLIC HarfBuzz::harfbuzz)
+  target_compile_definitions(dreamrender PUBLIC DREAMRENDER_USE_HARFBUZZ=1)
+  message(STATUS "dreamrender: HarfBuzz found — shaping enabled")
+else()
+  message(STATUS "dreamrender: HarfBuzz not found — shaping disabled")
+endif()

@@ -1,42 +1,11 @@
-module;
-
-#include <cstdint>
-#include <stdexcept>
-#include <string>
-
 export module dreamrender:debug;
 
-import vulkan_hpp;
+// Minimal debug utilities module. For environments without the Vulkan DebugUtils
+// extension or where names are not essential, provide no-op overloads so call
+// sites compile without extra dependency or platform conditionals.
 
-namespace dreamrender {
-
-export template<class T>
-void debugName(vk::Device device, T object, const std::string& name)
-{
-#if !defined(NDEBUG) && __linux__
-    using CType = typename T::CType;
-    vk::DebugUtilsObjectNameInfoEXT name_info(object.objectType, (uint64_t)((CType)object), name.c_str());
-    vk::Result result = device.setDebugUtilsObjectNameEXT(&name_info);
-    if(result != vk::Result::eSuccess)
-        throw std::runtime_error("naming failed: "+vk::to_string(result));
-#endif
+export namespace dreamrender {
+    template<typename... Args>
+    inline void debugName(Args&&...) noexcept {}
 }
 
-export enum class debug_tag : uint64_t
-{
-    TextureSrc
-};
-
-export template<class T>
-void debugTag(vk::Device device, T object, debug_tag tag, std::string value)
-{
-#if !defined(NDEBUG) && __linux__
-    using CType = typename T::CType;
-    vk::DebugUtilsObjectTagInfoEXT tag_info(object.objectType, (uint64_t)((CType)object), (uint64_t)tag, value.size()+1, value.c_str());
-    vk::Result result = device.setDebugUtilsObjectTagEXT(&tag_info);
-    if(result != vk::Result::eSuccess)
-        throw std::runtime_error("tagging failed: "+vk::to_string(result));
-#endif
-}
-
-}

@@ -75,6 +75,12 @@ export class gui_renderer {
             glm::vec4 color = glm::vec4(1.0, 1.0, 1.0, 1.0),
             bool centerH = false, bool centerV = false)
         {
+            // Ensure shaped glyphs are uploaded when HarfBuzz is enabled
+#ifdef DREAMRENDER_USE_HARFBUZZ
+            if(font_renderer) {
+                font_renderer->stage_glyphs(commandBuffer, text);
+            }
+#endif
             if(centerH || centerV) {
                 glm::vec2 size = measure_text(text, scale);
                 if(centerH)

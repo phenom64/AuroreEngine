@@ -13,8 +13,14 @@ module;
 #include <vector>
 #include <version>
 
+#include <glm/ext/vector_int2.hpp>
+
 #include <freetype2/ft2build.h>
 #include <freetype/freetype.h>
+#ifdef DREAMRENDER_USE_HARFBUZZ
+#include <harfbuzz/hb.h>
+#include <harfbuzz/hb-ft.h>
+#endif
 
 export module dreamrender:components.font_renderer;
 
@@ -24,6 +30,7 @@ import :texture;
 import :utils;
 
 import spdlog;
+import glm;
 import vulkan_hpp;
 import vma;
 
@@ -113,6 +120,30 @@ export class font_renderer {
             if(FT_Set_Pixel_Sizes(ftFace->get(), 0, fontSize) != 0) {
                 throw std::runtime_error("Failed to set font size");
             }
+#ifdef DREAMRENDER_USE_HARFBUZZ
+            int width = 2048, height = 2048;
+            spdlog::debug("Font atlas (HB) {}x{}", width, height);
+            // Init line height/baseline from face metrics
+            lineHeight = static_cast<float>(ftFace->get()->size->metrics.height >> 6);
+            baselinePx = (ftFace->get()->size->metrics.ascender >> 6);
+            atlasWidth = width; atlasHeight = height; packX = 0; packY = 0; packShelfH = 0;
+            // Create empty texture; upload zeros
+            fontTexture = std::make_unique<texture>(device, allocator, width, height,
+                vk::ImageUsageFlagBits::eSampled, vk::Format::eR8G8B8A8Unorm);
+            textureReady = loader->loadTexture(fontTexture.get(), [width, height](uint8_t* p, size_t size){
+                size_t need = static_cast<size_t>(width) * static_cast<size_t>(height) * 4;
+                if(need > size) throw std::runtime_error("Font atlas staging too small");
+                std::fill(p, p+need, 0x00);
+            });
+            // Create staging buffer for glyph uploads
+            glyphStagingSize = 8ull*1024ull*1024ull;
+            vk::BufferCreateInfo bi({}, glyphStagingSize, vk::BufferUsageFlagBits::eTransferSrc);
+            vma::AllocationCreateInfo ai({}, vma::MemoryUsage::eCpuToGpu);
+            auto [sbuf, salloc] = allocator.createBufferUnique(bi, ai);
+            glyphStagingBuf = std::move(sbuf);
+            glyphStagingAlloc = std::move(salloc);
+            glyphStagingMap = std::make_unique<vma::MemoryMapping>(allocator, glyphStagingAlloc.get());
+#else
             unsigned int columns = std::ceil(std::sqrt(static_cast<double>(endChar - startChar + 1)));
             unsigned int rows = std::ceil(static_cast<double>(endChar - startChar + 1) / columns);
 
@@ -162,12 +193,13 @@ export class font_renderer {
                     gm.advance = (slot->advance.x >> 6);
                     // top-left of the bitmap inside the tile
                     gm.atlasPos = {tileX + 0, tileY + (baseline - slot->bitmap_top)};
-                    glyphs[ch] = gm;
+                    glyphs.emplace(ch, gm);
                     ch++;
                 }
             }
             lineHeight = static_cast<float>(maxHeight);
             baselinePx = baseline;
+#endif
 
             struct guarantee_order {
 #if __cpp_lib_move_only_function >= 202110L && __linux__
@@ -181,7 +213,9 @@ export class font_renderer {
                 .ftManager=std::move(ftManager), .ftFace=std::move(ftFace)
             };
 
-            fontTexture = std::make_unique<texture>(device, allocator, width, height);
+            // Use UNORM to avoid sRGB gamma interaction on grayscale glyphs
+            fontTexture = std::make_unique<texture>(device, allocator, width, height,
+                vk::ImageUsageFlagBits::eSampled, vk::Format::eR8G8B8A8Unorm);
             textureReady = loader->loadTexture(fontTexture.get(),
                 [
                     this, columns, rows, maxWidth, maxHeight, startChar, endChar, baseline, width,
@@ -231,10 +265,23 @@ export class font_renderer {
                 }
             );
 
+            // Clamp to edge to avoid bleeding between glyph tiles
             vk::SamplerCreateInfo sampler_info({}, vk::Filter::eLinear, vk::Filter::eLinear, vk::SamplerMipmapMode::eLinear,
-                vk::SamplerAddressMode::eRepeat, vk::SamplerAddressMode::eRepeat, vk::SamplerAddressMode::eRepeat,
+                vk::SamplerAddressMode::eClampToEdge, vk::SamplerAddressMode::eClampToEdge, vk::SamplerAddressMode::eClampToEdge,
                 0.0f, false, 0.0f, false, vk::CompareOp::eNever, 0.0f, 0.0f, vk::BorderColor::eFloatTransparentBlack, false);
             sampler = device.createSamplerUnique(sampler_info);
+
+#ifdef DREAMRENDER_USE_HARFBUZZ
+            // Create persistent FT + HB objects for shaping
+            hbFtLib = std::make_unique<ft_library_wrapper>();
+            shapingFace = std::make_unique<ft_face_wrapper>(hbFtLib->get(), fontName);
+            if(FT_Set_Pixel_Sizes(shapingFace->get(), 0, fontSize) != 0) {
+                throw std::runtime_error("Failed to set font size (HB)");
+            }
+            hbFont.reset(hb_ft_font_create(shapingFace->get(), nullptr));
+            hbBuffer.reset(hb_buffer_create());
+            hb_buffer_set_cluster_level(hbBuffer.get(), HB_BUFFER_CLUSTER_LEVEL_MONOTONE_CHARACTERS);
+#endif
 
             {
                 std::array<vk::DescriptorSetLayoutBinding, 2> bindings = {
@@ -251,53 +298,9 @@ export class font_renderer {
                 debugName(device, pipelineLayout.get(), "Font Renderer Pipeline Layout");
             }
             {
-                vk::UniqueShaderModule vertexShader = compat_mode ?
-                    shaders::font_renderer::vert_compat(device) :
-                    shaders::font_renderer::vert(device);
-                vk::UniqueShaderModule geometryShader = {};
-                vk::UniqueShaderModule fragmentShader = shaders::font_renderer::frag(device);
-                std::vector<vk::PipelineShaderStageCreateInfo> shaders = {
-                    vk::PipelineShaderStageCreateInfo({}, vk::ShaderStageFlagBits::eVertex, vertexShader.get(), "main"),
-                    vk::PipelineShaderStageCreateInfo({}, vk::ShaderStageFlagBits::eFragment, fragmentShader.get(), "main")
-                };
-                if(!compat_mode) {
-                    geometryShader = shaders::font_renderer::geom(device);
-                    shaders.insert(shaders.begin()+1, // not sure if the position is important
-                        vk::PipelineShaderStageCreateInfo({}, vk::ShaderStageFlagBits::eGeometry, geometryShader.get(), "main"));
-                }
-
-                vk::VertexInputBindingDescription binding(0, sizeof(VertexCharacter), vk::VertexInputRate::eVertex);
-                std::array<vk::VertexInputAttributeDescription, 4> attributes = {
-                    vk::VertexInputAttributeDescription(0, 0, vk::Format::eR32G32Sfloat, offsetof(VertexCharacter, position)),
-                    vk::VertexInputAttributeDescription(1, 0, vk::Format::eR32G32Sfloat, offsetof(VertexCharacter, texCoord)),
-                    vk::VertexInputAttributeDescription(2, 0, vk::Format::eR32G32Sfloat, offsetof(VertexCharacter, size)),
-                    vk::VertexInputAttributeDescription(3, 0, vk::Format::eR32G32B32A32Sfloat, offsetof(VertexCharacter, color)),
-                };
-
-                vk::PipelineVertexInputStateCreateInfo vertex_input({}, binding, attributes);
-                vk::PipelineInputAssemblyStateCreateInfo input_assembly({},
-                    compat_mode ? vk::PrimitiveTopology::eTriangleList : vk::PrimitiveTopology::ePointList);
-                vk::PipelineTessellationStateCreateInfo tesselation({}, {});
-
-                vk::Viewport v{};
-                vk::Rect2D s{};
-                vk::PipelineViewportStateCreateInfo viewport({}, v, s);
-
-                vk::PipelineRasterizationStateCreateInfo rasterization({}, false, false, vk::PolygonMode::eFill, vk::CullModeFlagBits::eNone, vk::FrontFace::eCounterClockwise, false, 0.0f, 0.0f, 0.0f, 1.0f);
-                vk::PipelineMultisampleStateCreateInfo multisample({}, sampleCount);
-                vk::PipelineDepthStencilStateCreateInfo depthStencil({}, false, false);
-
-                vk::PipelineColorBlendAttachmentState attachment(true, vk::BlendFactor::eSrcAlpha, vk::BlendFactor::eOneMinusSrcAlpha, vk::BlendOp::eAdd,
-                    vk::BlendFactor::eOne, vk::BlendFactor::eOneMinusSrcAlpha, vk::BlendOp::eAdd,
-                    vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG | vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA);
-                vk::PipelineColorBlendStateCreateInfo colorBlend({}, false, vk::LogicOp::eClear, attachment);
-
-                std::array<vk::DynamicState, 2> dynamicStates{vk::DynamicState::eViewport, vk::DynamicState::eScissor};
-                vk::PipelineDynamicStateCreateInfo dynamic({}, dynamicStates);
-
-                vk::GraphicsPipelineCreateInfo pipeline_info({}, shaders, &vertex_input,
-                    &input_assembly, &tesselation, &viewport, &rasterization, &multisample, &depthStencil, &colorBlend, &dynamic, pipelineLayout.get(), {});
-                pipelines = createPipelines(device, pipelineCache, pipeline_info, renderPasses, "Font Renderer Pipeline");
+                // Remember sample count for later on-demand pipeline builds
+                last_sample_count = sampleCount;
+                build_pipelines(renderPasses, pipelineCache);
             }
             return textureReady;
         }
@@ -393,80 +396,85 @@ export class font_renderer {
             int total_chars = 0;
             {
                 VertexCharacter* vc = vertexPointers[frame] + compat_factor*vertexOffsets[frame];
-                float cx = 0; // cursor x within the text run
-                float cy = 0; // cursor y within the text run (line index)
-                std::mbstate_t mb{};
-                for(int i=0; i<text.size();)
-                {
-                    char32_t c{};
-#if __linux__ // for some reason this causes a crash in WINE, so for now this is Linux only
-                    int j = std::mbrtoc32(&c, text.data()+i, text.size()-i, &mb);
-                    if(j < 0) {
-                        spdlog::error("Failed to convert character at index {}: {}", i, std::strerror(errno));
-                        break;
-                    } else {
-                        i += j;
+
+#ifdef DREAMRENDER_USE_HARFBUZZ
+                if(hbFont && hbBuffer) {
+                    hb_buffer_clear_contents(hbBuffer.get());
+                    hb_buffer_set_direction(hbBuffer.get(), HB_DIRECTION_LTR);
+                    hb_buffer_set_script(hbBuffer.get(), HB_SCRIPT_COMMON);
+                    hb_buffer_set_language(hbBuffer.get(), hb_language_from_string("en", -1));
+                    hb_buffer_add_utf8(hbBuffer.get(), text.data(), text.size(), 0, text.size());
+                    hb_shape(hbFont.get(), hbBuffer.get(), nullptr, 0);
+                    unsigned int gn = 0;
+                    auto* infos = hb_buffer_get_glyph_infos(hbBuffer.get(), &gn);
+                    auto* pos = hb_buffer_get_glyph_positions(hbBuffer.get(), &gn);
+                    float cx = 0.0f, cy = 0.0f;
+                    for(unsigned int i=0; i<gn; ++i) {
+                        uint32_t gid = infos[i].codepoint;
+                        auto it = hbGlyphs.find(gid);
+                        if(it == hbGlyphs.end()) { continue; }
+                        const HBGlyph& g = it->second;
+                        float x_off = pos[i].x_offset/64.0f/lineHeight;
+                        float y_off = -pos[i].y_offset/64.0f/lineHeight;
+                        if(compat_mode) {
+                            float x0 = cx + x_off;
+                            float y0 = cy + y_off;
+                            glm::vec2 size = {static_cast<float>(g.bitmapSize.x) / lineHeight, static_cast<float>(g.bitmapSize.y) / lineHeight};
+                            float invW = 1.0f / static_cast<float>(fontTexture->width);
+                            float invH = 1.0f / static_cast<float>(fontTexture->height);
+                            glm::vec2 uv0{static_cast<float>(g.atlasPos.x) * invW, static_cast<float>(g.atlasPos.y) * invH};
+                            glm::vec2 uv1{static_cast<float>(g.atlasPos.x+g.bitmapSize.x) * invW, static_cast<float>(g.atlasPos.y+g.bitmapSize.y) * invH};
+                            VertexCharacter tl{ {x0, y0}, {uv0.x, uv0.y}, {}, color };
+                            VertexCharacter bl{ {x0, y0+size.y}, {uv0.x, uv1.y}, {}, color };
+                            VertexCharacter tr{ {x0+size.x, y0}, {uv1.x, uv0.y}, {}, color };
+                            VertexCharacter br{ {x0+size.x, y0+size.y}, {uv1.x, uv1.y}, {}, color };
+                            vc[6*total_chars+0] = tl;
+                            vc[6*total_chars+1] = bl;
+                            vc[6*total_chars+2] = tr;
+                            vc[6*total_chars+3] = tr;
+                            vc[6*total_chars+4] = bl;
+                            vc[6*total_chars+5] = br;
+                        } else {
+                            float x0 = cx + x_off + static_cast<float>(g.bearing.x) / lineHeight;
+                            float y0 = cy + y_off + static_cast<float>(baselinePx - g.bearing.y) / lineHeight;
+                            vc[total_chars] = { {x0, y0}, {static_cast<float>(g.atlasPos.x) / lineHeight, static_cast<float>(g.atlasPos.y) / lineHeight}, {static_cast<float>(g.bitmapSize.x) / lineHeight, static_cast<float>(g.bitmapSize.y) / lineHeight}, color };
+                        }
+                        cx += pos[i].x_advance/64.0f/lineHeight;
+                        total_chars++;
                     }
-#else
-                    c = static_cast<char32_t>(text[i]);
-                    i++;
+                } else
 #endif
-
-                    if(c == '\n') {
-                        cy += 1;
-                        cx = 0;
-                        continue;
-                    } else if(!glyphs.contains(c)) {
-                        c = '?';
+                {
+                    float cx = 0; float cy = 0; std::mbstate_t mb{};
+                    for(int i=0; i<static_cast<int>(text.size());) {
+                        char32_t c{};
+#if __linux__
+                        int j = std::mbrtoc32(&c, text.data()+i, text.size()-i, &mb);
+                        if(j < 0) { spdlog::error("Failed to convert character at {}", i); break; } else { i += j; }
+#else
+                        c = static_cast<char32_t>(text[i]); i++;
+#endif
+                        if(c == '\n') { cy += 1; cx = 0; continue; }
+                        if(!glyphs.contains(c)) c = '?';
+                        const GlyphMetrics& g = glyphs.at(c);
+                        if(compat_mode) {
+                            float x0 = cx; float y0 = cy;
+                            glm::vec2 size = {static_cast<float>(g.bitmapSize.x) / lineHeight, static_cast<float>(g.bitmapSize.y) / lineHeight};
+                            float invW = 1.0f / static_cast<float>(fontTexture->width);
+                            float invH = 1.0f / static_cast<float>(fontTexture->height);
+                            VertexCharacter tl{ {x0, y0}, {static_cast<float>(g.atlasPos.x) * invW, static_cast<float>(g.atlasPos.y) * invH}, {}, color };
+                            VertexCharacter bl{ {x0, y0+size.y}, {static_cast<float>(g.atlasPos.x) * invW, static_cast<float>(g.atlasPos.y+g.bitmapSize.y) * invH}, {}, color };
+                            VertexCharacter tr{ {x0+size.x, y0}, {static_cast<float>(g.atlasPos.x+g.bitmapSize.x) * invW, static_cast<float>(g.atlasPos.y) * invH}, {}, color };
+                            VertexCharacter br{ {x0+size.x, y0+size.y}, {static_cast<float>(g.atlasPos.x+g.bitmapSize.x) * invW, static_cast<float>(g.atlasPos.y+g.bitmapSize.y) * invH}, {}, color };
+                            vc[6*total_chars+0] = tl; vc[6*total_chars+1] = bl; vc[6*total_chars+2] = tr; vc[6*total_chars+3] = tr; vc[6*total_chars+4] = bl; vc[6*total_chars+5] = br;
+                        } else {
+                            float x0 = cx + static_cast<float>(g.bearing.x) / lineHeight;
+                            float y0 = cy + static_cast<float>(baselinePx - g.bearing.y) / lineHeight;
+                            vc[total_chars] = { {x0, y0}, {static_cast<float>(g.atlasPos.x) / lineHeight, static_cast<float>(g.atlasPos.y) / lineHeight}, {static_cast<float>(g.bitmapSize.x) / lineHeight, static_cast<float>(g.bitmapSize.y) / lineHeight}, color };
+                        }
+                        cx += static_cast<float>(g.advance) / lineHeight;
+                        total_chars++;
                     }
-
-                    const GlyphMetrics& g = glyphs[c];
-                    if(compat_mode) {
-                        // Compute quad position using glyph bearings; texcoords in pixel space
-                        float x0 = cx + static_cast<float>(g.bearing.x) / lineHeight;
-                        float y0 = cy + static_cast<float>(baselinePx - g.bearing.y) / lineHeight;
-                        glm::vec2 size = {static_cast<float>(g.bitmapSize.x) / lineHeight, static_cast<float>(g.bitmapSize.y) / lineHeight};
-
-                        VertexCharacter topLeft = {
-                            .position = {x0, y0},
-                            .texCoord = {static_cast<float>(g.atlasPos.x), static_cast<float>(g.atlasPos.y)},
-                            .size = {}, // unused in compat path
-                            .color = color};
-                        VertexCharacter bottomLeft = {
-                            .position = {x0, y0+size.y},
-                            .texCoord = {static_cast<float>(g.atlasPos.x), static_cast<float>(g.atlasPos.y+g.bitmapSize.y)},
-                            .size = {}, // unused in compat path
-                            .color = color};
-                        VertexCharacter topRight = {
-                            .position = {x0+size.x, y0},
-                            .texCoord = {static_cast<float>(g.atlasPos.x+g.bitmapSize.x), static_cast<float>(g.atlasPos.y)},
-                            .size = {}, // unused in compat path
-                            .color = color};
-                        VertexCharacter bottomRight = {
-                            .position = {x0+size.x, y0+size.y},
-                            .texCoord = {static_cast<float>(g.atlasPos.x+g.bitmapSize.x), static_cast<float>(g.atlasPos.y+g.bitmapSize.y)},
-                            .size = {}, // unused in compat path
-                            .color = color};
-
-                        vc[6*total_chars+0] = topLeft;
-                        vc[6*total_chars+1] = bottomLeft;
-                        vc[6*total_chars+2] = topRight;
-                        vc[6*total_chars+3] = topRight;
-                        vc[6*total_chars+4] = bottomLeft;
-                        vc[6*total_chars+5] = bottomRight;
-                    } else {
-                        // Geometry path: position in line-height units using bearings; texcoords AND inSize in line-height units
-                        // so the geometry shader math remains consistent.
-                        float x0 = cx + static_cast<float>(g.bearing.x) / lineHeight;
-                        float y0 = cy + static_cast<float>(baselinePx - g.bearing.y) / lineHeight;
-                        vc[total_chars] = {
-                            .position = {x0, y0},
-                            .texCoord = {static_cast<float>(g.atlasPos.x) / lineHeight, static_cast<float>(g.atlasPos.y) / lineHeight},
-                            .size = {static_cast<float>(g.bitmapSize.x) / lineHeight, static_cast<float>(g.bitmapSize.y) / lineHeight},
-                            .color = color};
-                    }
-                    cx += static_cast<float>(g.advance) / lineHeight;
-                    total_chars++;
                 }
             }
             {
@@ -480,11 +488,8 @@ export class font_renderer {
                 uni.matrix = matrix;
                 // Provide atlas dimensions in pixels; shader divides by this to normalize
                 if(compat_mode) {
-                    // pixel-space texcoords in compat path
-                    uni.textureSize = {
-                        static_cast<float>(fontTexture->width),
-                        static_cast<float>(fontTexture->height)
-                    };
+                    // compat path uses normalized texcoords
+                    uni.textureSize = {1.0f, 1.0f};
                 } else {
                     // geometry path retains lineHeight-normalized texcoords
                     uni.textureSize = {
@@ -493,7 +498,17 @@ export class font_renderer {
                     };
                 }
             }
-            cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, pipelines[renderPass].get());
+            auto itp = pipelines.find(renderPass);
+            if(itp == pipelines.end() || !itp->second) {
+                spdlog::warn("[FontRenderer] Pipeline for renderPass not found; creating on-demand");
+                build_pipelines({renderPass}, {});
+                itp = pipelines.find(renderPass);
+                if(itp == pipelines.end() || !itp->second) {
+                    spdlog::error("[FontRenderer] Failed to build pipeline for current renderPass");
+                    return;
+                }
+            }
+            cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, itp->second.get());
             cmd.bindVertexBuffers(0, vertexBuffers[frame].get(), compat_factor*vertexOffsets[frame]*sizeof(VertexCharacter));
             cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, pipelineLayout.get(), 0, descriptorSets[frame], uniformPointers[frame].offset(uniformOffsets[frame]));
             cmd.draw(compat_factor*total_chars, 1, 0, 0);
@@ -503,26 +518,160 @@ export class font_renderer {
         }
         glm::vec2 measureText(std::string_view text, float scale = 1.0f) {
             float width = 0;
+#ifdef DREAMRENDER_USE_HARFBUZZ
+            if(hbFont && hbBuffer) {
+                hb_buffer_clear_contents(hbBuffer.get());
+                hb_buffer_set_direction(hbBuffer.get(), HB_DIRECTION_LTR);
+                hb_buffer_set_script(hbBuffer.get(), HB_SCRIPT_COMMON);
+                hb_buffer_set_language(hbBuffer.get(), hb_language_from_string("en", -1));
+                hb_buffer_add_utf8(hbBuffer.get(), text.data(), text.size(), 0, text.size());
+                hb_shape(hbFont.get(), hbBuffer.get(), nullptr, 0);
+                unsigned int gn = 0;
+                auto* pos = hb_buffer_get_glyph_positions(hbBuffer.get(), &gn);
+                for(unsigned int i=0; i<gn; ++i) {
+                    width += pos[i].x_advance/64.0f/lineHeight;
+                }
+                return glm::vec2{width*scale/aspectRatio, scale}/2.0f;
+            }
+#endif
             for(char i : text)
             {
-                if(i == '\n') {
-                    // very simple line handling: take longest line width
-                    continue;
-                }
-                auto it = glyphs.find(i);
+                if(i == '\n') continue;
+                auto it = glyphs.find(static_cast<char32_t>(i));
                 if(it == glyphs.end()) continue;
-                width += static_cast<float>(it->second.advance)/lineHeight;
+                const GlyphMetrics& m = (*it).second;
+                width += static_cast<float>(m.advance)/lineHeight;
             }
             return glm::vec2{width*scale/aspectRatio, scale}/2.0f;
         }
 
+
     private:
+        void build_pipelines(const std::vector<vk::RenderPass>& renderPasses, vk::PipelineCache pipelineCache) {
+            vk::UniqueShaderModule vertexShader = compat_mode ?
+                shaders::font_renderer::vert_compat(device) :
+                shaders::font_renderer::vert(device);
+            vk::UniqueShaderModule geometryShader = {};
+            vk::UniqueShaderModule fragmentShader = shaders::font_renderer::frag(device);
+            std::vector<vk::PipelineShaderStageCreateInfo> shaderStages = {
+                vk::PipelineShaderStageCreateInfo({}, vk::ShaderStageFlagBits::eVertex, vertexShader.get(), "main"),
+                vk::PipelineShaderStageCreateInfo({}, vk::ShaderStageFlagBits::eFragment, fragmentShader.get(), "main")
+            };
+            if(!compat_mode) {
+                geometryShader = shaders::font_renderer::geom(device);
+                shaderStages.insert(shaderStages.begin()+1,
+                    vk::PipelineShaderStageCreateInfo({}, vk::ShaderStageFlagBits::eGeometry, geometryShader.get(), "main"));
+            }
+
+            vk::VertexInputBindingDescription binding(0, sizeof(VertexCharacter), vk::VertexInputRate::eVertex);
+            std::array<vk::VertexInputAttributeDescription, 4> attributes = {
+                vk::VertexInputAttributeDescription(0, 0, vk::Format::eR32G32Sfloat, offsetof(VertexCharacter, position)),
+                vk::VertexInputAttributeDescription(1, 0, vk::Format::eR32G32Sfloat, offsetof(VertexCharacter, texCoord)),
+                vk::VertexInputAttributeDescription(2, 0, vk::Format::eR32G32Sfloat, offsetof(VertexCharacter, size)),
+                vk::VertexInputAttributeDescription(3, 0, vk::Format::eR32G32B32A32Sfloat, offsetof(VertexCharacter, color)),
+            };
+
+            vk::PipelineVertexInputStateCreateInfo vertex_input({}, binding, attributes);
+            vk::PipelineInputAssemblyStateCreateInfo input_assembly({},
+                compat_mode ? vk::PrimitiveTopology::eTriangleList : vk::PrimitiveTopology::ePointList);
+            vk::PipelineTessellationStateCreateInfo tesselation({}, {});
+
+            vk::Viewport v{};
+            vk::Rect2D s{};
+            vk::PipelineViewportStateCreateInfo viewport({}, v, s);
+
+            vk::PipelineRasterizationStateCreateInfo rasterization({}, false, false, vk::PolygonMode::eFill, vk::CullModeFlagBits::eNone, vk::FrontFace::eCounterClockwise, false, 0.0f, 0.0f, 0.0f, 1.0f);
+            vk::PipelineMultisampleStateCreateInfo multisample({}, last_sample_count);
+            vk::PipelineDepthStencilStateCreateInfo depthStencil({}, false, false);
+
+            vk::PipelineColorBlendAttachmentState attachment(true, vk::BlendFactor::eSrcAlpha, vk::BlendFactor::eOneMinusSrcAlpha, vk::BlendOp::eAdd,
+                vk::BlendFactor::eOne, vk::BlendFactor::eOneMinusSrcAlpha, vk::BlendOp::eAdd,
+                vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG | vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA);
+            vk::PipelineColorBlendStateCreateInfo colorBlend({}, false, vk::LogicOp::eClear, attachment);
+
+            std::array<vk::DynamicState, 2> dynamicStates{vk::DynamicState::eViewport, vk::DynamicState::eScissor};
+            vk::PipelineDynamicStateCreateInfo dynamic({}, dynamicStates);
+
+            vk::GraphicsPipelineCreateInfo pipeline_info({}, shaderStages, &vertex_input,
+                &input_assembly, &tesselation, &viewport, &rasterization, &multisample, &depthStencil, &colorBlend, &dynamic, pipelineLayout.get(), {});
+
+            auto newPipelines = createPipelines(device, pipelineCache, pipeline_info, renderPasses, "Font Renderer Pipeline");
+            for(auto& [rp, p] : newPipelines) {
+                pipelines[rp] = std::move(p);
+            }
+        }
+        
+#ifdef DREAMRENDER_USE_HARFBUZZ
+        struct HBGlyph {
+            glm::ivec2 atlasPos;
+            glm::ivec2 bitmapSize;
+            glm::ivec2 bearing;
+            int advance;
+        };
+        // Rasterize glyph and place it in the atlas using a simple shelf packer.
+        // Writes RGBA pixels into the staging buffer at current offset.
+        // Returns pointer to the inserted entry or nullptr on failure.
+        HBGlyph* rasterize_and_pack_glyph(uint32_t gid, uint8_t* stagingBase, vk::DeviceSize curOffset) {
+            if(!shapingFace) return nullptr;
+            FT_Face face = shapingFace->get();
+            if(FT_Load_Glyph(face, gid, FT_LOAD_DEFAULT) != 0) return nullptr;
+            if(FT_Render_Glyph(face->glyph, FT_RENDER_MODE_NORMAL) != 0) return nullptr;
+            FT_GlyphSlot slot = face->glyph;
+            FT_Bitmap bmp = slot->bitmap;
+            int w = bmp.width, h = bmp.rows;
+            if(w == 0 || h == 0) {
+                // Space-like glyph; synthesize empty entry with zero bitmap
+                auto [it, ok] = hbGlyphs.emplace(gid, HBGlyph{ {packX, packY}, {0,0}, {slot->bitmap_left, slot->bitmap_top}, int(slot->advance.x >> 6) });
+                return &it->second;
+            }
+            // Advance packer to next shelf if needed
+            if(packX + w > atlasWidth) { packX = 0; packY += packShelfH; packShelfH = 0; }
+            if(packY + h > atlasHeight) {
+                spdlog::error("Font atlas full ({}x{}); cannot place glyph {}", atlasWidth, atlasHeight, gid);
+                return nullptr;
+            }
+            // Copy grayscale to RGBA in staging buffer
+            uint8_t* dst = stagingBase + curOffset;
+            for(int yy=0; yy<h; ++yy) {
+                for(int xx=0; xx<w; ++xx) {
+                    uint8_t v = bmp.buffer[yy*bmp.pitch + xx];
+                    size_t o = (size_t(yy)*size_t(w) + size_t(xx)) * 4;
+                    dst[o+0] = v; dst[o+1] = v; dst[o+2] = v; dst[o+3] = v;
+                }
+            }
+            HBGlyph entry{ {packX, packY}, {w, h}, {slot->bitmap_left, slot->bitmap_top}, int(slot->advance.x >> 6) };
+            auto res = hbGlyphs.emplace(gid, entry);
+            packX += w + 1; packShelfH = std::max(packShelfH, h + 1);
+            return &res.first->second;
+        }
+#endif
         vk::Device device;
         vma::Allocator allocator;
         std::string fontName;
         int fontSize;
 
         bool compat_mode{};
+        vk::SampleCountFlagBits last_sample_count{vk::SampleCountFlagBits::e1};
+
+#ifdef DREAMRENDER_USE_HARFBUZZ
+        struct HbBufferDeleter { void operator()(hb_buffer_t* b) const noexcept { if(b) hb_buffer_destroy(b); } };
+        struct HbFontDeleter { void operator()(hb_font_t* f) const noexcept { if(f) hb_font_destroy(f); } };
+        std::unique_ptr<ft_library_wrapper> hbFtLib;
+        std::unique_ptr<ft_face_wrapper> shapingFace;
+        std::unique_ptr<hb_font_t, HbFontDeleter> hbFont;
+        std::unique_ptr<hb_buffer_t, HbBufferDeleter> hbBuffer;
+        // Dynamic atlas state
+        int atlasWidth{};
+        int atlasHeight{};
+        int packX{};
+        int packY{};
+        int packShelfH{};
+        std::unordered_map<uint32_t, HBGlyph> hbGlyphs;
+        vma::UniqueBuffer glyphStagingBuf;
+        vma::UniqueAllocation glyphStagingAlloc;
+        std::unique_ptr<vma::MemoryMapping> glyphStagingMap;
+        vk::DeviceSize glyphStagingSize{};
+#endif
 
         struct GlyphMetrics {
             glm::ivec2 atlasPos;     // top-left in atlas (pixels)
