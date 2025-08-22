@@ -150,15 +150,24 @@ export class font_renderer {
                     if(FT_Load_Glyph(ftFace->get(), glyph_index, load_flags) != 0) {
                         throw std::runtime_error("Failed to load glyph");
                     }
+                    if(FT_Render_Glyph(ftFace->get()->glyph, FT_RENDER_MODE_NORMAL) != 0) {
+                        throw std::runtime_error("Failed to render glyph");
+                    }
                     FT_GlyphSlot slot = ftFace->get()->glyph;
-                    glyphRects[ch] = vk::Rect2D{
-                        vk::Offset2D{static_cast<int32_t>(c * maxWidth), static_cast<int32_t>(r * maxHeight)},
-                        vk::Extent2D{static_cast<uint32_t>(slot->advance.x >> 6), maxHeight}
-                    };
+                    int tileX = c * maxWidth;
+                    int tileY = r * maxHeight;
+                    GlyphMetrics gm;
+                    gm.bitmapSize = {slot->bitmap.width, slot->bitmap.rows};
+                    gm.bearing = {slot->bitmap_left, slot->bitmap_top};
+                    gm.advance = (slot->advance.x >> 6);
+                    // top-left of the bitmap inside the tile
+                    gm.atlasPos = {tileX + 0, tileY + (baseline - slot->bitmap_top)};
+                    glyphs[ch] = gm;
                     ch++;
                 }
             }
             lineHeight = static_cast<float>(maxHeight);
+            baselinePx = baseline;
 
             struct guarantee_order {
 #if __cpp_lib_move_only_function >= 202110L && __linux__
@@ -211,7 +220,7 @@ export class font_renderer {
                                     unsigned int color = pixel_brightness | pixel_brightness << 8 | pixel_brightness << 16 | pixel_brightness << 24;
 
                                     int dx = x;
-                                    int dy = y + baseline - slot->bitmap_top;
+                                    int dy = y + baseline - slot->bitmap_top; // position glyph relative to baseline
 
                                     pixels[(r*maxHeight + dy)*width + c*maxWidth + dx] = color;
                                 }
@@ -407,33 +416,35 @@ export class font_renderer {
                         cy += 1;
                         cx = 0;
                         continue;
-                    } else if(!glyphRects.contains(c)) {
+                    } else if(!glyphs.contains(c)) {
                         c = '?';
                     }
 
-                    vk::Rect2D g = glyphRects[c];
+                    const GlyphMetrics& g = glyphs[c];
                     if(compat_mode) {
-                        // Positions remain in lineHeight-normalized units; texcoords switch to pixel space
-                        glm::vec2 size = {((float)g.extent.width)/lineHeight, ((float)g.extent.height)/lineHeight};
+                        // Compute quad position using glyph bearings; texcoords in pixel space
+                        float x0 = cx + static_cast<float>(g.bearing.x) / lineHeight;
+                        float y0 = cy + static_cast<float>(baselinePx - g.bearing.y) / lineHeight;
+                        glm::vec2 size = {static_cast<float>(g.bitmapSize.x) / lineHeight, static_cast<float>(g.bitmapSize.y) / lineHeight};
 
                         VertexCharacter topLeft = {
-                            .position = {cx, cy},
-                            .texCoord = {static_cast<float>(g.offset.x), static_cast<float>(g.offset.y)},
+                            .position = {x0, y0},
+                            .texCoord = {static_cast<float>(g.atlasPos.x), static_cast<float>(g.atlasPos.y)},
                             .size = {}, // unused in compat path
                             .color = color};
                         VertexCharacter bottomLeft = {
-                            .position = {cx, cy+size.y},
-                            .texCoord = {static_cast<float>(g.offset.x), static_cast<float>(g.offset.y+g.extent.height)},
+                            .position = {x0, y0+size.y},
+                            .texCoord = {static_cast<float>(g.atlasPos.x), static_cast<float>(g.atlasPos.y+g.bitmapSize.y)},
                             .size = {}, // unused in compat path
                             .color = color};
                         VertexCharacter topRight = {
-                            .position = {cx+size.x, cy},
-                            .texCoord = {static_cast<float>(g.offset.x+g.extent.width), static_cast<float>(g.offset.y)},
+                            .position = {x0+size.x, y0},
+                            .texCoord = {static_cast<float>(g.atlasPos.x+g.bitmapSize.x), static_cast<float>(g.atlasPos.y)},
                             .size = {}, // unused in compat path
                             .color = color};
                         VertexCharacter bottomRight = {
-                            .position = {cx+size.x, cy+size.y},
-                            .texCoord = {static_cast<float>(g.offset.x+g.extent.width), static_cast<float>(g.offset.y+g.extent.height)},
+                            .position = {x0+size.x, y0+size.y},
+                            .texCoord = {static_cast<float>(g.atlasPos.x+g.bitmapSize.x), static_cast<float>(g.atlasPos.y+g.bitmapSize.y)},
                             .size = {}, // unused in compat path
                             .color = color};
 
@@ -444,14 +455,17 @@ export class font_renderer {
                         vc[6*total_chars+4] = bottomLeft;
                         vc[6*total_chars+5] = bottomRight;
                     } else {
-                        // Geometry path: keep positions in lineHeight units; texcoords/sizes in pixels
+                        // Geometry path: position in line-height units using bearings; texcoords AND inSize in line-height units
+                        // so the geometry shader math remains consistent.
+                        float x0 = cx + static_cast<float>(g.bearing.x) / lineHeight;
+                        float y0 = cy + static_cast<float>(baselinePx - g.bearing.y) / lineHeight;
                         vc[total_chars] = {
-                            .position = {cx, cy},
-                            .texCoord = {static_cast<float>(g.offset.x), static_cast<float>(g.offset.y)},
-                            .size = {static_cast<float>(g.extent.width), static_cast<float>(g.extent.height)},
+                            .position = {x0, y0},
+                            .texCoord = {static_cast<float>(g.atlasPos.x) / lineHeight, static_cast<float>(g.atlasPos.y) / lineHeight},
+                            .size = {static_cast<float>(g.bitmapSize.x) / lineHeight, static_cast<float>(g.bitmapSize.y) / lineHeight},
                             .color = color};
                     }
-                    cx += ((float)g.extent.width)/lineHeight;
+                    cx += static_cast<float>(g.advance) / lineHeight;
                     total_chars++;
                 }
             }
@@ -465,10 +479,19 @@ export class font_renderer {
                 matrix = glm::scale(matrix, glm::vec3(scale/aspectRatio, scale, 1.0f));
                 uni.matrix = matrix;
                 // Provide atlas dimensions in pixels; shader divides by this to normalize
-                uni.textureSize = {
-                    static_cast<float>(fontTexture->width),
-                    static_cast<float>(fontTexture->height)
-                };
+                if(compat_mode) {
+                    // pixel-space texcoords in compat path
+                    uni.textureSize = {
+                        static_cast<float>(fontTexture->width),
+                        static_cast<float>(fontTexture->height)
+                    };
+                } else {
+                    // geometry path retains lineHeight-normalized texcoords
+                    uni.textureSize = {
+                        static_cast<float>(fontTexture->width) / lineHeight,
+                        static_cast<float>(fontTexture->height) / lineHeight
+                    };
+                }
             }
             cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, pipelines[renderPass].get());
             cmd.bindVertexBuffers(0, vertexBuffers[frame].get(), compat_factor*vertexOffsets[frame]*sizeof(VertexCharacter));
@@ -482,8 +505,13 @@ export class font_renderer {
             float width = 0;
             for(char i : text)
             {
-                vk::Rect2D g = glyphRects[i];
-                width += static_cast<float>(g.extent.width)/lineHeight;
+                if(i == '\n') {
+                    // very simple line handling: take longest line width
+                    continue;
+                }
+                auto it = glyphs.find(i);
+                if(it == glyphs.end()) continue;
+                width += static_cast<float>(it->second.advance)/lineHeight;
             }
             return glm::vec2{width*scale/aspectRatio, scale}/2.0f;
         }
@@ -496,10 +524,17 @@ export class font_renderer {
 
         bool compat_mode{};
 
-        std::unordered_map<char32_t, vk::Rect2D> glyphRects;
+        struct GlyphMetrics {
+            glm::ivec2 atlasPos;     // top-left in atlas (pixels)
+            glm::ivec2 bitmapSize;   // width/height of bitmap (pixels)
+            glm::ivec2 bearing;      // bitmap_left, bitmap_top (pixels)
+            int advance;             // advance.x (pixels)
+        };
+        std::unordered_map<char32_t, GlyphMetrics> glyphs;
         size_t maxCharacters{};
         size_t maxTexts{};
         float lineHeight{};
+        int baselinePx{};
 
         struct VertexCharacter {
             glm::vec2 position;
@@ -510,6 +545,7 @@ export class font_renderer {
         struct TextUniform {
             glm::mat4 matrix;
             glm::vec2 textureSize;
+            glm::vec2 _pad; // std140 padding to 16-byte multiple
         };
         std::vector<VertexCharacter*> vertexPointers;
         std::vector<aligned_wrapper<TextUniform>> uniformPointers;
