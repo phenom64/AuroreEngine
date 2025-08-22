@@ -292,6 +292,8 @@ export class font_renderer {
             }
             return textureReady;
         }
+        // Expose the font atlas for optional debugging (e.g., draw via image_renderer)
+        const texture* get_atlas() const { return fontTexture.get(); }
         void prepare(int imageCount) {
             std::array<vk::DescriptorPoolSize, 2> sizes = {
                 vk::DescriptorPoolSize(vk::DescriptorType::eUniformBufferDynamic, 1*imageCount),
@@ -382,8 +384,8 @@ export class font_renderer {
             int total_chars = 0;
             {
                 VertexCharacter* vc = vertexPointers[frame] + compat_factor*vertexOffsets[frame];
-                float x = 0;
-                float y = 0;
+                float cx = 0; // cursor x within the text run
+                float cy = 0; // cursor y within the text run (line index)
                 std::mbstate_t mb{};
                 for(int i=0; i<text.size();)
                 {
@@ -402,8 +404,8 @@ export class font_renderer {
 #endif
 
                     if(c == '\n') {
-                        y += 1;
-                        x = 0;
+                        cy += 1;
+                        cx = 0;
                         continue;
                     } else if(!glyphRects.contains(c)) {
                         c = '?';
@@ -411,27 +413,28 @@ export class font_renderer {
 
                     vk::Rect2D g = glyphRects[c];
                     if(compat_mode) {
+                        // Positions remain in lineHeight-normalized units; texcoords switch to pixel space
                         glm::vec2 size = {((float)g.extent.width)/lineHeight, ((float)g.extent.height)/lineHeight};
 
                         VertexCharacter topLeft = {
-                            .position = {x, y},
-                            .texCoord = {static_cast<float>(g.offset.x)/lineHeight, static_cast<float>(g.offset.y)/lineHeight},
-                            .size = {}, // unused
+                            .position = {cx, cy},
+                            .texCoord = {static_cast<float>(g.offset.x), static_cast<float>(g.offset.y)},
+                            .size = {}, // unused in compat path
                             .color = color};
                         VertexCharacter bottomLeft = {
-                            .position = {x, y+size.y},
-                            .texCoord = {static_cast<float>(g.offset.x)/lineHeight, static_cast<float>(g.offset.y+g.extent.height)/lineHeight},
-                            .size = {}, // unused
+                            .position = {cx, cy+size.y},
+                            .texCoord = {static_cast<float>(g.offset.x), static_cast<float>(g.offset.y+g.extent.height)},
+                            .size = {}, // unused in compat path
                             .color = color};
                         VertexCharacter topRight = {
-                            .position = {x+size.x, y},
-                            .texCoord = {static_cast<float>(g.offset.x+g.extent.width)/lineHeight, static_cast<float>(g.offset.y)/lineHeight},
-                            .size = {}, // unused
+                            .position = {cx+size.x, cy},
+                            .texCoord = {static_cast<float>(g.offset.x+g.extent.width), static_cast<float>(g.offset.y)},
+                            .size = {}, // unused in compat path
                             .color = color};
                         VertexCharacter bottomRight = {
-                            .position = {x+size.x, y+size.y},
-                            .texCoord = {static_cast<float>(g.offset.x+g.extent.width)/lineHeight, static_cast<float>(g.offset.y+g.extent.height)/lineHeight},
-                            .size = {}, // unused
+                            .position = {cx+size.x, cy+size.y},
+                            .texCoord = {static_cast<float>(g.offset.x+g.extent.width), static_cast<float>(g.offset.y+g.extent.height)},
+                            .size = {}, // unused in compat path
                             .color = color};
 
                         vc[6*total_chars+0] = topLeft;
@@ -441,17 +444,19 @@ export class font_renderer {
                         vc[6*total_chars+4] = bottomLeft;
                         vc[6*total_chars+5] = bottomRight;
                     } else {
+                        // Geometry path: keep positions in lineHeight units; texcoords/sizes in pixels
                         vc[total_chars] = {
-                            .position = {x, y},
-                            .texCoord = {static_cast<float>(g.offset.x)/lineHeight, static_cast<float>(g.offset.y)/lineHeight},
-                            .size = {((float)g.extent.width)/lineHeight, ((float)g.extent.height)/lineHeight},
+                            .position = {cx, cy},
+                            .texCoord = {static_cast<float>(g.offset.x), static_cast<float>(g.offset.y)},
+                            .size = {static_cast<float>(g.extent.width), static_cast<float>(g.extent.height)},
                             .color = color};
                     }
-                    x += ((float)g.extent.width)/lineHeight;
+                    cx += ((float)g.extent.width)/lineHeight;
                     total_chars++;
                 }
             }
             {
+                // Position the text run using the provided (x,y) in normalized space
                 glm::vec2 pos = glm::vec2(x, y)*2.0f - glm::vec2(1.0f);
 
                 TextUniform& uni = uniformPointers[frame][uniformOffsets[frame]];
@@ -459,9 +464,10 @@ export class font_renderer {
                 matrix = glm::translate(matrix, glm::vec3(pos, 0.0f));
                 matrix = glm::scale(matrix, glm::vec3(scale/aspectRatio, scale, 1.0f));
                 uni.matrix = matrix;
+                // Provide atlas dimensions in pixels; shader divides by this to normalize
                 uni.textureSize = {
-                    static_cast<float>(fontTexture->width)/lineHeight,
-                    static_cast<float>(fontTexture->height)/lineHeight
+                    static_cast<float>(fontTexture->width),
+                    static_cast<float>(fontTexture->height)
                 };
             }
             cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, pipelines[renderPass].get());
