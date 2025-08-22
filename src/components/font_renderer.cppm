@@ -93,6 +93,76 @@ export class font_renderer {
               compat_mode(!check_features(features)) {}
         ~font_renderer() = default;
 
+#ifdef DREAMRENDER_USE_HARFBUZZ
+        // Upload required glyphs (with ligatures enabled) into the atlas before drawing
+        void stage_glyphs(vk::CommandBuffer cmd, std::string_view text)
+        {
+            if(!hbFont || !hbBuffer) return;
+            if(textureReady.wait_for(std::chrono::seconds(0)) != std::future_status::ready) return;
+            if(!glyphStagingMap) return;
+
+            hb_buffer_clear_contents(hbBuffer.get());
+            // Basic defaults; can be extended for Bidi/scripts later
+            hb_buffer_set_direction(hbBuffer.get(), HB_DIRECTION_LTR);
+            hb_buffer_set_script(hbBuffer.get(), HB_SCRIPT_COMMON);
+            hb_buffer_set_language(hbBuffer.get(), hb_language_from_string("en", -1));
+            hb_buffer_add_utf8(hbBuffer.get(), text.data(), text.size(), 0, text.size());
+            hb_shape(hbFont.get(), hbBuffer.get(), nullptr, 0);
+
+            unsigned int gn = 0;
+            auto* infos = hb_buffer_get_glyph_infos(hbBuffer.get(), &gn);
+            // Collect missing glyphs
+            std::vector<uint32_t> missing;
+            missing.reserve(gn);
+            for(unsigned int i=0; i<gn; ++i) {
+                uint32_t gid = infos[i].codepoint;
+                if(hbGlyphs.find(gid) == hbGlyphs.end()) missing.push_back(gid);
+            }
+            if(missing.empty()) return;
+
+            // Transition atlas to transfer dst
+            cmd.pipelineBarrier(vk::PipelineStageFlagBits::eFragmentShader, vk::PipelineStageFlagBits::eTransfer,
+                {}, {}, {}, vk::ImageMemoryBarrier(
+                    vk::AccessFlagBits::eShaderRead, vk::AccessFlagBits::eTransferWrite,
+                    vk::ImageLayout::eShaderReadOnlyOptimal, vk::ImageLayout::eTransferDstOptimal,
+                    vk::QueueFamilyIgnored, vk::QueueFamilyIgnored,
+                    fontTexture->image,
+                    vk::ImageSubresourceRange(vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1)));
+
+            std::vector<vk::BufferImageCopy> copies;
+            copies.reserve(missing.size());
+            uint8_t* base = static_cast<uint8_t*>(glyphStagingMap->get());
+            vk::DeviceSize offset = 0;
+            for(uint32_t gid : missing) {
+                // Ensure we have space in staging buffer (simple guard)
+                if(offset + 1024*1024 > glyphStagingSize) break;
+                HBGlyph* entry = rasterize_and_pack_glyph(gid, base, offset);
+                if(entry && entry->bitmapSize.x > 0 && entry->bitmapSize.y > 0) {
+                    copies.push_back(vk::BufferImageCopy(offset, 0, 0,
+                        vk::ImageSubresourceLayers(vk::ImageAspectFlagBits::eColor, 0, 0, 1),
+                        vk::Offset3D(entry->atlasPos.x, entry->atlasPos.y, 0),
+                        vk::Extent3D(entry->bitmapSize.x, entry->bitmapSize.y, 1)));
+                    offset += static_cast<vk::DeviceSize>(entry->bitmapSize.x * entry->bitmapSize.y * 4);
+                }
+            }
+            if(!copies.empty()) {
+                // Ensure CPU writes to the staging buffer are visible to the GPU
+                // before issuing the copy. On non-coherent memory, this flush is required.
+                // We flush only the written range [0, offset).
+                allocator.flushAllocation(glyphStagingAlloc.get(), 0, offset);
+                cmd.copyBufferToImage(glyphStagingBuf.get(), fontTexture->image, vk::ImageLayout::eTransferDstOptimal, copies);
+            }
+            // Back to shader read
+            cmd.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eFragmentShader,
+                {}, {}, {}, vk::ImageMemoryBarrier(
+                    vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eShaderRead,
+                    vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eShaderReadOnlyOptimal,
+                    vk::QueueFamilyIgnored, vk::QueueFamilyIgnored,
+                    fontTexture->image,
+                    vk::ImageSubresourceRange(vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1)));
+        }
+#endif
+
         std::shared_future<void> preload(resource_loader* loader,
             const std::vector<vk::RenderPass>& renderPasses, vk::SampleCountFlagBits sampleCount,
             vk::PipelineCache pipelineCache = {},
@@ -213,6 +283,7 @@ export class font_renderer {
                 .ftManager=std::move(ftManager), .ftFace=std::move(ftFace)
             };
 
+#ifndef DREAMRENDER_USE_HARFBUZZ
             // Use UNORM to avoid sRGB gamma interaction on grayscale glyphs
             fontTexture = std::make_unique<texture>(device, allocator, width, height,
                 vk::ImageUsageFlagBits::eSampled, vk::Format::eR8G8B8A8Unorm);
@@ -264,6 +335,7 @@ export class font_renderer {
                     }
                 }
             );
+#endif
 
             // Clamp to edge to avoid bleeding between glyph tiles
             vk::SamplerCreateInfo sampler_info({}, vk::Filter::eLinear, vk::Filter::eLinear, vk::SamplerMipmapMode::eLinear,
