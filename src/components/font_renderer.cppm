@@ -197,46 +197,90 @@ export class font_renderer {
             lineHeight = static_cast<float>(ftFace->get()->size->metrics.height >> 6);
             baselinePx = (ftFace->get()->size->metrics.ascender >> 6);
             atlasWidth = width; atlasHeight = height; packX = 0; packY = 0; packShelfH = 0;
-            // Create empty texture; upload zeros
+            // Create atlas texture and pre-populate with a baseline glyph set (ASCII + Latin-1) on CPU.
+            // Upload as a single operation via the resource_loader to avoid in-pass copies.
             fontTexture = std::make_unique<texture>(device, allocator, width, height,
                 vk::ImageUsageFlagBits::eSampled, vk::Format::eR8G8B8A8Unorm);
-            textureReady = loader->loadTexture(fontTexture.get(), [width, height](uint8_t* p, size_t size){
-                size_t need = static_cast<size_t>(width) * static_cast<size_t>(height) * 4;
+            std::string fontCapture = fontName; // capture by value for loader thread
+            int fontPx = fontSize;
+            textureReady = loader->loadTexture(fontTexture.get(), [this, width, height, fontCapture, fontPx](uint8_t* p, size_t size){
+                const size_t need = static_cast<size_t>(width) * static_cast<size_t>(height) * 4;
                 if(need > size) throw std::runtime_error("Font atlas staging too small");
                 std::fill(p, p+need, 0x00);
+
+                ft_library_wrapper lib;
+                ft_face_wrapper face(lib.get(), fontCapture);
+                if(FT_Set_Pixel_Sizes(face.get(), 0, fontPx) != 0) {
+                    throw std::runtime_error("Failed to set font size (atlas)");
+                }
+
+                // Reset packer for deterministic CPU build
+                packX = 0; packY = 0; packShelfH = 0;
+                hbGlyphs.clear();
+
+                auto insert_cp = [&](uint32_t cp){
+                    FT_UInt gid = FT_Get_Char_Index(face.get(), cp);
+                    if(gid == 0) return; // missing
+                    if(FT_Load_Glyph(face.get(), gid, FT_LOAD_DEFAULT) != 0) return;
+                    if(FT_Render_Glyph(face.get()->glyph, FT_RENDER_MODE_NORMAL) != 0) return;
+                    FT_GlyphSlot slot = face.get()->glyph;
+                    FT_Bitmap bmp = slot->bitmap;
+
+                    int w = bmp.width, h = bmp.rows;
+                    if(w == 0 || h == 0) {
+                        hbGlyphs.emplace(gid, HBGlyph{ {packX, packY}, {0,0}, {slot->bitmap_left, slot->bitmap_top}, int(slot->advance.x >> 6) });
+                        return;
+                    }
+                    if(packX + w > atlasWidth) { packX = 0; packY += packShelfH; packShelfH = 0; }
+                    if(packY + h > atlasHeight) return; // out of space
+                    for(int yy=0; yy<h; ++yy) {
+                        for(int xx=0; xx<w; ++xx) {
+                            uint8_t v = bmp.buffer[yy*bmp.pitch + xx];
+                            size_t o = (static_cast<size_t>(packY+yy) * static_cast<size_t>(width) + static_cast<size_t>(packX+xx)) * 4ull;
+                            p[o+0] = v; p[o+1] = v; p[o+2] = v; p[o+3] = v;
+                        }
+                    }
+                    hbGlyphs.emplace(gid, HBGlyph{ {packX, packY}, {w, h}, {slot->bitmap_left, slot->bitmap_top}, int(slot->advance.x >> 6) });
+                    packX += w + 1; packShelfH = std::max(packShelfH, h + 1);
+                };
+
+                // Basic ASCII
+                for(uint32_t cp = 32; cp <= 126; ++cp) insert_cp(cp);
+                // Latin-1 supplement
+                for(uint32_t cp = 160; cp <= 255; ++cp) insert_cp(cp);
             });
-            // Create staging buffer for glyph uploads
-            glyphStagingSize = 8ull*1024ull*1024ull;
-            vk::BufferCreateInfo bi({}, glyphStagingSize, vk::BufferUsageFlagBits::eTransferSrc);
-            vma::AllocationCreateInfo ai({}, vma::MemoryUsage::eCpuToGpu);
-            auto [sbuf, salloc] = allocator.createBufferUnique(bi, ai);
-            glyphStagingBuf = std::move(sbuf);
-            glyphStagingAlloc = std::move(salloc);
-            glyphStagingMap = std::make_unique<vma::MemoryMapping>(allocator, glyphStagingAlloc.get());
 #else
             unsigned int columns = std::ceil(std::sqrt(static_cast<double>(endChar - startChar + 1)));
             unsigned int rows = std::ceil(static_cast<double>(endChar - startChar + 1) / columns);
 
+            // Determine maximum glyph tile size using rendered glyph bitmaps.
+            // On some platforms FreeType does not populate bitmap width/rows
+            // unless the glyph is rendered, which previously produced 0-sized
+            // atlases and garbled text. Render each glyph once to get sizes.
             unsigned int maxWidth = 0;
             unsigned int maxHeight = 0;
             FT_Int baseline = 0;
 
+            FT_Select_Charmap(ftFace->get(), ft_encoding_unicode);
             for(char32_t c=startChar; c<=endChar; c++) {
                 FT_UInt glyph_index = FT_Get_Char_Index(ftFace->get(), c);
                 FT_Int32 load_flags = FT_LOAD_DEFAULT;
                 if(FT_Load_Glyph(ftFace->get(), glyph_index, load_flags) != 0) {
                     throw std::runtime_error("Failed to load glyph");
                 }
+                if(FT_Render_Glyph(ftFace->get()->glyph, FT_RENDER_MODE_NORMAL) != 0) {
+                    throw std::runtime_error("Failed to render glyph");
+                }
                 FT_GlyphSlot slot = ftFace->get()->glyph;
                 baseline = std::max(baseline, slot->bitmap_top);
-                maxWidth = std::max(maxWidth, slot->bitmap.width);
-                maxHeight = std::max(maxHeight, slot->bitmap.rows);
+                maxWidth = std::max(maxWidth, static_cast<unsigned int>(slot->bitmap.width));
+                maxHeight = std::max(maxHeight, static_cast<unsigned int>(slot->bitmap.rows));
             }
             maxWidth += 4;
             maxHeight += 4;
 
-            long width = columns * maxWidth;
-            long height = rows * maxHeight;
+            long width = std::max(1u, columns * maxWidth);
+            long height = std::max(1u, rows * maxHeight);
             spdlog::debug("Font texture will be {}x{} ({}x{})", width, height, columns, rows);
 
             char32_t ch = startChar;
@@ -603,7 +647,8 @@ export class font_renderer {
                 for(unsigned int i=0; i<gn; ++i) {
                     width += pos[i].x_advance/64.0f/lineHeight;
                 }
-                return glm::vec2{width*scale/aspectRatio, scale}/2.0f;
+                // Return full text bounds in normalized units
+                return glm::vec2{width*scale/aspectRatio, scale};
             }
 #endif
             for(char i : text)
@@ -614,7 +659,7 @@ export class font_renderer {
                 const GlyphMetrics& m = (*it).second;
                 width += static_cast<float>(m.advance)/lineHeight;
             }
-            return glm::vec2{width*scale/aspectRatio, scale}/2.0f;
+            return glm::vec2{width*scale/aspectRatio, scale};
         }
 
 
