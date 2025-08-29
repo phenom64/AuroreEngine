@@ -273,14 +273,11 @@ export class window
                     auto dt = std::chrono::duration<double>(now - lastFrame).count();
                     lastFrame = now;
 
-                    using vk::PresentModeKHR::eFifo;
-                    using vk::PresentModeKHR::eFifoRelaxed;
-                    if(config.fpsLimit > 0 && (config.fpsLimit < refreshRate ||
-                        !(swapchainPresentMode == eFifo || swapchainPresentMode == eFifoRelaxed)))
-                    {
+                    // Always honour FPS limit if set — even with FIFO present modes
+                    if(config.fpsLimit > 0) {
                         auto frame_time = std::chrono::duration<double>(std::chrono::seconds(1)) / config.fpsLimit;
                         auto sleep = frame_time - std::chrono::duration<double>(now - lastFrame);
-                        if(sleep > frame_time / 10) {
+                        if(sleep > frame_time / 100) {
                             std::this_thread::sleep_for(sleep);
                         }
                     }
