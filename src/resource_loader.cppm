@@ -200,8 +200,9 @@ export class resource_loader
             {
                 std::scoped_lock<std::mutex> l(lock);
 
+                // Use transient + resettable command buffers to reduce pool-wide resets
                 pool = device.createCommandPoolUnique(
-                        vk::CommandPoolCreateInfo({}, transferFamily));
+                        vk::CommandPoolCreateInfo(vk::CommandPoolCreateFlagBits::eTransient | vk::CommandPoolCreateFlagBits::eResetCommandBuffer, transferFamily));
                 commandBuffer = std::move(device.allocateCommandBuffersUnique(
                         vk::CommandBufferAllocateInfo(pool.get(), vk::CommandBufferLevel::ePrimary, 1)).back());
                 fence = device.createFenceUnique(vk::FenceCreateInfo());
@@ -257,7 +258,8 @@ export class resource_loader
                             {
                                 spdlog::error("[Resource Loader {}] Waiting for fence failed: {}", index, vk::to_string(result));
                             }
-                            device.resetCommandPool(pool.get());
+                            // Reset only the command buffer and fence instead of the entire pool
+                            commandBuffer.get().reset();
                             device.resetFences(fence.get());
 
                             if(std::holds_alternative<texture*>(task.dst))

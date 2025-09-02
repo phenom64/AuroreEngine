@@ -238,9 +238,9 @@ export class window
             initVulkan();
         }
         void loop() {
-            startTime = std::chrono::high_resolution_clock::now();
-            lastFrame = std::chrono::high_resolution_clock::now();
-            lastFPS = std::chrono::high_resolution_clock::now();
+            startTime = std::chrono::steady_clock::now();
+            lastFrame = startTime;
+            lastFPS = startTime;
             framesInSecond = 0;
 
             int currentFrame = 0;
@@ -269,18 +269,19 @@ export class window
                         return;
                     }
 
-                    auto now = std::chrono::high_resolution_clock::now();
+                    auto now = std::chrono::steady_clock::now();
                     auto dt = std::chrono::duration<double>(now - lastFrame).count();
-                    lastFrame = now;
 
-                    // Always honour FPS limit if set — even with FIFO present modes
+                    // Honour FPS limit if set — sleep until target time based on lastFrame
                     if(config.fpsLimit > 0) {
                         auto frame_time = std::chrono::duration<double>(std::chrono::seconds(1)) / config.fpsLimit;
-                        auto sleep = frame_time - std::chrono::duration<double>(now - lastFrame);
-                        if(sleep > frame_time / 100) {
-                            std::this_thread::sleep_for(sleep);
+                        auto target = lastFrame + frame_time;
+                        if(now < target) {
+                            std::this_thread::sleep_until(target);
+                            now = std::chrono::steady_clock::now();
                         }
                     }
+                    lastFrame = now;
                 }
 
                 std::scoped_lock lock(renderLock);
@@ -397,7 +398,7 @@ export class window
 
                 totalFrameNumber++;
                 framesInSecond++;
-                auto t = std::chrono::high_resolution_clock::now();
+                auto t = std::chrono::steady_clock::now();
                 using namespace std::chrono_literals;
                 if((t-lastFPS) > (1000ms/fpsSampleRate))
                 {
@@ -549,13 +550,13 @@ export class window
 
         vk::UniquePipelineCache pipelineCache;
 
-        decltype(std::chrono::high_resolution_clock::now()) startTime;
-        decltype(std::chrono::high_resolution_clock::now()) lastFrame;
+        std::chrono::steady_clock::time_point startTime;
+        std::chrono::steady_clock::time_point lastFrame;
 
         uint64_t totalFrameNumber{};
         static constexpr int fpsSampleRate = 5;
         uint64_t framesInSecond{};
-        decltype(std::chrono::high_resolution_clock::now()) lastFPS;
+        std::chrono::steady_clock::time_point lastFPS;
         int fpsCount{};
         double currentFPS{};
         int refreshRate{};
@@ -790,18 +791,35 @@ export class window
                 queueFamilyIndices.transferFamily.value_or(UINT32_MAX)};
             auto families = physicalDevice.getQueueFamilyProperties();
 
-            std::vector<float> priorities(std::ranges::max_element(families, [](auto a, auto b){
-                return a.queueCount < b.queueCount;
-            })->queueCount);
-            std::ranges::fill(priorities, 1.0f);
+            // Bound the number of queues we request to avoid oversubscription on low-core CPUs
+            unsigned int desiredTransferQueues = []{
+                unsigned int hc = std::thread::hardware_concurrency();
+                if(hc == 0) hc = 2;
+                // Use up to half the cores, clamped between 1 and 4
+                unsigned int n = std::max(1u, std::min(4u, hc/2));
+                return n;
+            }();
+
+            // Prepare a priorities array large enough for the largest queueCount we will request
+            auto maxRequested = 1u;
+            if(queueFamilyIndices.transferFamily.has_value()) {
+                maxRequested = std::max(maxRequested, std::min<unsigned int>(families[queueFamilyIndices.transferFamily.value()].queueCount, desiredTransferQueues));
+            }
+            std::vector<float> priorities(maxRequested, 1.0f);
+
             for(uint32_t queueFamily : uniqueQueueFamilies)
             {
                 if(queueFamily == UINT32_MAX)
                     continue;
 
+                uint32_t count = 1;
+                if(queueFamilyIndices.transferFamily.has_value() && queueFamily == queueFamilyIndices.transferFamily.value()) {
+                    count = std::min<uint32_t>(families[queueFamily].queueCount, desiredTransferQueues);
+                }
+
                 queueInfos.emplace_back()
                     .setQueueFamilyIndex(queueFamily)
-                    .setQueueCount(families[queueFamily].queueCount)
+                    .setQueueCount(count)
                     .setPQueuePriorities(priorities.data());
             }
 
@@ -858,7 +876,8 @@ export class window
             if(queueFamilyIndices.transferFamily.has_value())
             {
                 int index = queueFamilyIndices.transferFamily.value();
-                for(int i=0; i<families[index].queueCount; i++)
+                unsigned int count = std::min<unsigned int>(families[index].queueCount, desiredTransferQueues);
+                for(unsigned int i=0; i<count; i++)
                 {
                     transferQueues.push_back(device->getQueue(index, i));
                 }

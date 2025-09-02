@@ -109,6 +109,12 @@ export class gui_renderer {
             }
             image_renderer->renderImage(commandBuffer, frame, renderPass, texture, x, y, scaleX, scaleY, color*this->color);
         }
+        // Experimental: glass effect for icons (no background refraction; self-contained effect)
+        void draw_image_glass(const texture& texture, float x, float y, float scaleX = 1.0f, float scaleY = 1.0f,
+            glm::vec4 color = glm::vec4(1.0, 1.0, 1.0, 1.0))
+        {
+            image_renderer->renderImageGlass(commandBuffer, frame, renderPass, texture.imageView.get(), x, y, scaleX, scaleY, color*this->color);
+        }
         void draw_image(vk::ImageView view, float x, float y, float scaleX = 1.0f, float scaleY = 1.0f,
             glm::vec4 color = glm::vec4(1.0, 1.0, 1.0, 1.0))
         {

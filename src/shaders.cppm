@@ -17,6 +17,7 @@ namespace image_renderer {
     vk::UniqueShaderModule vert(vk::Device device);
     vk::UniqueShaderModule frag(vk::Device device);
     vk::UniqueShaderModule frag_compat(vk::Device device);
+    vk::UniqueShaderModule frag_glass(vk::Device device);
 }
 
 namespace simple_renderer {

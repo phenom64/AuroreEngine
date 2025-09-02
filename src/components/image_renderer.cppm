@@ -1,6 +1,8 @@
 module;
 
 #include <vector>
+#include <array>
+#include <cstdint>
 
 export module dreamrender:components.image_renderer;
 
@@ -110,6 +112,29 @@ export class image_renderer {
                     &rasterization, &multisample, &depthStencil, &colorBlend, &dynamic,
                     pipelineLayout.get(), renderPasses[0], 0, {}, {});
                 pipelines = createPipelines(device, pipelineCache, info, renderPasses, "Image Renderer Pipeline");
+
+                // Glass pipeline: simple descriptor set with one sampler and alternate fragment shader
+                std::array<vk::DescriptorSetLayoutBinding,1> glassBindings = {
+                    vk::DescriptorSetLayoutBinding(0, vk::DescriptorType::eCombinedImageSampler, 1, vk::ShaderStageFlagBits::eFragment)
+                };
+                glassDescriptorLayout = device.createDescriptorSetLayoutUnique(
+                    vk::DescriptorSetLayoutCreateInfo({}, glassBindings));
+
+                auto glassPush = std::array{ vk::PushConstantRange(vk::ShaderStageFlagBits::eVertex|vk::ShaderStageFlagBits::eFragment, 0, sizeof(push_constants)) };
+                pipelineLayoutGlass = device.createPipelineLayoutUnique(
+                    vk::PipelineLayoutCreateInfo({}, glassDescriptorLayout.get(), glassPush));
+                debugName(device, pipelineLayoutGlass.get(), "Image Renderer Glass Pipeline Layout");
+
+                vk::UniqueShaderModule glassFrag = shaders::image_renderer::frag_glass(device);
+                std::array<vk::PipelineShaderStageCreateInfo, 2> glassStages = {
+                    vk::PipelineShaderStageCreateInfo({}, vk::ShaderStageFlagBits::eVertex, vertexShader.get(), "main"),
+                    vk::PipelineShaderStageCreateInfo({}, vk::ShaderStageFlagBits::eFragment, glassFrag.get(), "main")
+                };
+                vk::GraphicsPipelineCreateInfo ginfo({},
+                    glassStages, &vertex_input, &input_assembly, &tesselation, &viewport,
+                    &rasterization, &multisample, &depthStencil, &colorBlend, &dynamic,
+                    pipelineLayoutGlass.get(), renderPasses[0], 0, {}, {});
+                pipelinesGlass = createPipelines(device, pipelineCache, ginfo, renderPasses, "Image Renderer Glass Pipeline");
             }
         }
 
@@ -134,6 +159,16 @@ export class image_renderer {
                 descriptorSets = device.allocateDescriptorSets(set_info);
                 imageInfos.resize(frameCount);
             }
+
+            // Allocate per-frame glass descriptor sets if glass pipeline is present
+            if(glassDescriptorLayout && pipelineLayoutGlass) {
+                std::array<vk::DescriptorPoolSize,1> sizes = {
+                    vk::DescriptorPoolSize(vk::DescriptorType::eCombinedImageSampler, static_cast<uint32_t>(frameCount))
+                };
+                glassDescriptorPool = device.createDescriptorPoolUnique(vk::DescriptorPoolCreateInfo({}, frameCount, sizes));
+                std::vector<vk::DescriptorSetLayout> glLayouts(frameCount, glassDescriptorLayout.get());
+                glassDescriptorSets = device.allocateDescriptorSets(vk::DescriptorSetAllocateInfo(glassDescriptorPool.get(), glLayouts));
+            }
         }
 
         void finish(int frame) {
@@ -149,6 +184,29 @@ export class image_renderer {
                 imageInfos[frame].size(), vk::DescriptorType::eCombinedImageSampler, imageInfos[frame].data());
             device.updateDescriptorSets(write, {});
             imageInfos[frame].clear();
+        }
+
+        // Glass icon variant: single icon sampler + special fragment
+        void renderImageGlass(vk::CommandBuffer cmd, int frame, vk::RenderPass renderPass, vk::ImageView iconView,
+                              float x, float y, float scaleX, float scaleY, glm::vec4 color = glm::vec4(1.0,1.0,1.0,1.0))
+        {
+            if(!iconView) return;
+            vk::DescriptorImageInfo img(sampler.get(), iconView, vk::ImageLayout::eShaderReadOnlyOptimal);
+            vk::WriteDescriptorSet write(glassDescriptorSets[frame], 0, 0, 1, vk::DescriptorType::eCombinedImageSampler, &img);
+            device.updateDescriptorSets(write, {});
+
+            cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, pipelinesGlass[renderPass].get());
+            cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, pipelineLayoutGlass.get(), 0, glassDescriptorSets[frame], {});
+
+            glm::vec2 pos = glm::vec2(x, y)*2.0f - glm::vec2(1.0f);
+            push_constants push{};
+            push.matrix = glm::mat4(1.0f);
+            push.matrix = glm::translate(push.matrix, glm::vec3(pos, 0.0f));
+            push.matrix = glm::scale(push.matrix, glm::vec3(scaleX / aspectRatio, scaleY, 1.0f));
+            push.index = 0;
+            push.color = color;
+            cmd.pushConstants<push_constants>(pipelineLayoutGlass.get(), vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, push);
+            cmd.draw(4, 1, 0, 0);
         }
 
         void renderImage(vk::CommandBuffer cmd, int frame, vk::RenderPass renderPass, vk::ImageView view, float x, float y, float scaleX, float scaleY, glm::vec4 color = glm::vec4(1.0, 1.0, 1.0, 1.0)) {
@@ -251,6 +309,13 @@ export class image_renderer {
         std::vector<vk::DescriptorSet> descriptorSets;
         vk::UniquePipelineLayout pipelineLayout;
         UniquePipelineMap pipelines;
+
+        // Glass variant
+        vk::UniqueDescriptorSetLayout glassDescriptorLayout;
+        vk::UniquePipelineLayout pipelineLayoutGlass;
+        UniquePipelineMap pipelinesGlass;
+        vk::UniqueDescriptorPool glassDescriptorPool;
+        std::vector<vk::DescriptorSet> glassDescriptorSets;
 
         std::vector<
             std::vector<vk::DescriptorImageInfo>
