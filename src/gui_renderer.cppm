@@ -3,6 +3,7 @@ module;
 #include <cstdint>
 #include <string_view>
 #include <vector>
+#include <algorithm>
 
 export module dreamrender:gui_renderer;
 
@@ -71,6 +72,48 @@ export class gui_renderer {
             commandBuffer.setScissor(0, scissor);
         }
 
+        // Zoom helpers: apply a temporary viewport/scissor scale centered on screen
+        void push_zoom(float scale) {
+            scale = std::clamp(scale, 0.1f, 1.0f);
+            vk::Viewport vp(0.0f, 0.0f,
+                static_cast<float>(frame_size.width),
+                static_cast<float>(frame_size.height), 0.0f, 1.0f);
+            float nw = vp.width * scale;
+            float nh = vp.height * scale;
+            vp.x = (vp.width - nw) * 0.5f;
+            vp.y = (vp.height - nh) * 0.5f;
+            vp.width = nw;
+            vp.height = nh;
+            viewport_stack.push_back(vp);
+            commandBuffer.setViewport(0, vp);
+
+            vk::Rect2D scissor({0,0}, frame_size);
+            scissor.offset.x = static_cast<int32_t>(vp.x);
+            scissor.offset.y = static_cast<int32_t>(vp.y);
+            scissor.extent.width  = static_cast<uint32_t>(vp.width);
+            scissor.extent.height = static_cast<uint32_t>(vp.height);
+            scissor_stack.push_back(scissor);
+            commandBuffer.setScissor(0, scissor);
+        }
+        void pop_zoom() {
+            if(!viewport_stack.empty()) viewport_stack.pop_back();
+            if(!scissor_stack.empty()) scissor_stack.pop_back();
+            // Restore to previous or full
+            if(!viewport_stack.empty()) {
+                commandBuffer.setViewport(0, viewport_stack.back());
+            } else {
+                vk::Viewport vp(0.0f, 0.0f,
+                    static_cast<float>(frame_size.width),
+                    static_cast<float>(frame_size.height), 0.0f, 1.0f);
+                commandBuffer.setViewport(0, vp);
+            }
+            if(!scissor_stack.empty()) {
+                commandBuffer.setScissor(0, scissor_stack.back());
+            } else {
+                reset_clip();
+            }
+        }
+
         void draw_text(std::string_view text, float x, float y, float scale = 1.0f,
             glm::vec4 color = glm::vec4(1.0, 1.0, 1.0, 1.0),
             bool centerH = false, bool centerV = false)
@@ -82,6 +125,7 @@ export class gui_renderer {
                 if(centerV)
                     y -= size.y / 2.0f;
             }
+            apply_view();
             font_renderer->renderText(commandBuffer, frame, renderPass, text, x, y, scale, color*this->color);
         }
         glm::vec2 measure_text(std::string_view text, float scale) const {
@@ -91,6 +135,7 @@ export class gui_renderer {
         void draw_image(const texture& texture, float x, float y, float scaleX = 1.0f, float scaleY = 1.0f,
             glm::vec4 color = glm::vec4(1.0, 1.0, 1.0, 1.0))
         {
+            apply_view();
             image_renderer->renderImage(commandBuffer, frame, renderPass, texture, x, y, scaleX, scaleY, color*this->color);
         }
         void draw_image_a(const texture& texture, float x, float y, float scaleX = 1.0f, float scaleY = 1.0f,
@@ -107,27 +152,32 @@ export class gui_renderer {
                 }
                 scaleX *= static_cast<float>(texture.width) / texture.height;
             }
+            apply_view();
             image_renderer->renderImage(commandBuffer, frame, renderPass, texture, x, y, scaleX, scaleY, color*this->color);
         }
         // Experimental: glass effect for icons (no background refraction; self-contained effect)
         void draw_image_glass(const texture& texture, float x, float y, float scaleX = 1.0f, float scaleY = 1.0f,
             glm::vec4 color = glm::vec4(1.0, 1.0, 1.0, 1.0))
         {
+            apply_view();
             image_renderer->renderImageGlass(commandBuffer, frame, renderPass, texture.imageView.get(), x, y, scaleX, scaleY, color*this->color);
         }
         void draw_image(vk::ImageView view, float x, float y, float scaleX = 1.0f, float scaleY = 1.0f,
             glm::vec4 color = glm::vec4(1.0, 1.0, 1.0, 1.0))
         {
+            apply_view();
             image_renderer->renderImage(commandBuffer, frame, renderPass, view, x, y, scaleX, scaleY, color*this->color);
         }
         void draw_image_sized(const texture& texture, float x, float y, int width = -1, int height = -1,
             glm::vec4 color = glm::vec4(1.0, 1.0, 1.0, 1.0))
         {
+            apply_view();
             image_renderer->renderImageSized(commandBuffer, frame, renderPass, texture, x, y, width, height, color*this->color);
         }
         void draw_image_sized(vk::ImageView view, float x, float y, int width, int height,
             glm::vec4 color = glm::vec4(1.0, 1.0, 1.0, 1.0))
         {
+            apply_view();
             image_renderer->renderImageSized(commandBuffer, frame, renderPass, view, x, y, width, height, color*this->color);
         }
 
@@ -138,6 +188,7 @@ export class gui_renderer {
             for(auto& v : vertices_vector) {
                 v.color *= color;
             }
+            apply_view();
             simple_renderer->renderGeneric(commandBuffer, frame, renderPass, vertices_vector, p);
         }
         void draw_quad(std::ranges::range auto vertices, simple_renderer::params p = {})
@@ -147,9 +198,11 @@ export class gui_renderer {
             for(auto& v : vertices_vector) {
                 v.color *= color;
             }
+            apply_view();
             simple_renderer->renderQuad(commandBuffer, frame, renderPass, vertices_vector, p);
         }
         void draw_rect(glm::vec2 position, glm::vec2 size, glm::vec4 color = glm::vec4(1.0, 1.0, 1.0, 1.0), simple_renderer::params p = {}) {
+            apply_view();
             simple_renderer->renderRect(commandBuffer, frame, renderPass, position, size, color*this->color, p);
         }
 
@@ -178,6 +231,14 @@ export class gui_renderer {
             return renderPass;
         }
     private:
+        void apply_view() {
+            if(!viewport_stack.empty()) {
+                commandBuffer.setViewport(0, viewport_stack.back());
+            }
+            if(!scissor_stack.empty()) {
+                commandBuffer.setScissor(0, scissor_stack.back());
+            }
+        }
         font_renderer* font_renderer;
         image_renderer* image_renderer;
         simple_renderer* simple_renderer;
@@ -188,6 +249,9 @@ export class gui_renderer {
 
         glm::vec4 color = glm::vec4(1.0f);
         std::vector<glm::vec4> color_stack;
+
+        std::vector<vk::Viewport> viewport_stack;
+        std::vector<vk::Rect2D> scissor_stack;
 };
 
 }
