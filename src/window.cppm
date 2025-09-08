@@ -353,6 +353,19 @@ export class window
                     graphicsQueue.submit(submitInfo, {}); // no fence here, we just don't give a shit anymore
                 } else {
                     std::tie(r, imageIndex) = device->acquireNextImageKHR(swapchain.get(), UINT64_MAX, imageAvailableSemaphores[currentFrame].get());
+                    if(r == vk::Result::eErrorOutOfDateKHR) {
+                        spdlog::debug("Swapchain out of date on acquire; recreating");
+                        recreateSwapchain();
+                        continue; // retry next frame
+                    } else if(r == vk::Result::eSuboptimalKHR) {
+                        spdlog::debug("Swapchain suboptimal on acquire; recreating");
+                        recreateSwapchain();
+                        continue; // retry next frame
+                    } else if(r != vk::Result::eSuccess) {
+                        spdlog::error("AcquireNextImage failed with result {}", vk::to_string(r));
+                        recreateSwapchain();
+                        continue;
+                    }
                     if(imagesInFlight[imageIndex]) {
                         r = device->waitForFences(imagesInFlight[imageIndex], true, UINT64_MAX);
                         if(r != vk::Result::eSuccess)
@@ -391,8 +404,8 @@ export class window
                 } else {
                     vk::PresentInfoKHR present_info(renderFinishedSemaphores[currentFrame].get(), swapchain.get(), imageIndex);
                     r = presentQueue.presentKHR(present_info);
-                    if(r == vk::Result::eSuboptimalKHR) {
-                        spdlog::debug("Suboptiomal present result; recreating swapchain");
+                    if(r == vk::Result::eErrorOutOfDateKHR || r == vk::Result::eSuboptimalKHR) {
+                        spdlog::debug("Present {} ; recreating swapchain", (r==vk::Result::eErrorOutOfDateKHR?"out-of-date":"suboptimal"));
                         recreateSwapchain();
                     } else if(r != vk::Result::eSuccess) {
                         spdlog::error("Present failed with result {}", vk::to_string(r));
