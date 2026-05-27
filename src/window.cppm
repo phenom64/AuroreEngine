@@ -9,6 +9,9 @@ module;
 #include <termios.h>
 #include <unistd.h> // For STDIN_FILENO
 #endif
+#if defined(_WIN32) && !defined(STDIN_FILENO)
+#define STDIN_FILENO 0
+#endif
 
 #include <algorithm>
 #include <cstdlib>
@@ -16,6 +19,7 @@ module;
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
 #include <iterator>
 #include <iostream>
 #include <limits>
@@ -24,8 +28,10 @@ module;
 #include <mutex>
 #include <optional>
 #include <set>
+#include <sstream>
 #include <string>
 #include <string_view>
+#include <stdexcept>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -181,6 +187,15 @@ static std::filesystem::path get_cache_dir() {
     return std::filesystem::temp_directory_path() / "dreamrender";
 }
 
+static bool env_truthy(const char* name) {
+    const char* value = std::getenv(name);
+    if(!value) {
+        return false;
+    }
+    std::string_view sv{value};
+    return sv == "1" || sv == "true" || sv == "TRUE" || sv == "on" || sv == "ON" || sv == "yes" || sv == "YES";
+}
+
 export class window
 {
     public:
@@ -190,17 +205,33 @@ export class window
             spdlog::debug("Destroying window");
 
             std::scoped_lock lock(renderLock);
-            device->waitIdle();
-            {
-                auto data = device->getPipelineCacheData(pipelineCache.get());
-                spdlog::debug("Saving pipeline cache of {} bytes", data.size()*sizeof(decltype(data)::value_type));
-                auto path = get_cache_dir() / config.name / "pipeline_cache.bin";
 
-                if(!std::filesystem::exists(path.parent_path()))
-                    std::filesystem::create_directories(path.parent_path());
+            if(device) {
+                try {
+                    device->waitIdle();
+                } catch(const std::exception& e) {
+                    spdlog::warn("Failed to wait for device idle during shutdown: {}", e.what());
+                }
 
-                std::ofstream out(path, std::ios::binary);
-                std::ranges::copy(data, std::ostream_iterator<uint8_t>(out));
+                if(pipelineCache) {
+                    try {
+                        auto data = device->getPipelineCacheData(pipelineCache.get());
+                        spdlog::debug("Saving pipeline cache of {} bytes", data.size()*sizeof(decltype(data)::value_type));
+                        auto path = get_cache_dir() / config.name / "pipeline_cache.bin";
+
+                        if(!std::filesystem::exists(path.parent_path()))
+                            std::filesystem::create_directories(path.parent_path());
+
+                        std::ofstream out(path, std::ios::binary);
+                        if(out) {
+                            std::ranges::copy(data, std::ostream_iterator<uint8_t>(out));
+                        } else {
+                            spdlog::warn("Failed to open pipeline cache for writing: {}", path.string());
+                        }
+                    } catch(const std::exception& e) {
+                        spdlog::warn("Failed to save pipeline cache: {}", e.what());
+                    }
+                }
             }
             current_renderer.reset();
             loader.reset();
@@ -208,10 +239,19 @@ export class window
             headlessTextures.clear();
             headlessOutputBuffers.clear();
             headlessOutputAllocations.clear();
-            allocator.destroy();
+            if(allocatorInitialized) {
+                try {
+                    allocator.destroy();
+                } catch(const std::exception& e) {
+                    spdlog::warn("Failed to destroy Vulkan memory allocator: {}", e.what());
+                }
+                allocatorInitialized = false;
+            }
 
-            if(!config.headless) {
+            if(audioInitialized) {
+                sdl::mix::CloseAudio();
                 sdl::mix::Quit();
+                audioInitialized = false;
             }
         }
 
@@ -291,11 +331,16 @@ export class window
             }
             static sdl::initializer sdl_init;
             if(!config.headless) {
+                spdlog::debug("Initializing SDL window");
                 initWindow();
+                spdlog::debug("Initializing SDL_mixer audio");
                 initAudio();
+                spdlog::debug("Initializing SDL input");
                 initInput();
             }
+            spdlog::debug("Initializing Vulkan");
             initVulkan();
+            spdlog::debug("Window initialization complete");
         }
         void loop() {
             startTime = std::chrono::steady_clock::now();
@@ -605,12 +650,16 @@ export class window
             }
 
             auto t0 = std::chrono::high_resolution_clock::now();
+            spdlog::debug("Preparing phase: preload");
             current_renderer->preload();
             auto tPreload = std::chrono::high_resolution_clock::now();
+            spdlog::debug("Preparing phase: prepare");
             current_renderer->prepare(swapchainImages, swapchainImageViewsRaw);
             auto tPrepare = std::chrono::high_resolution_clock::now();
+            spdlog::debug("Preparing phase: waitLoad");
             current_renderer->waitLoad(); // replace with loading screen
             auto tWaitLoad = std::chrono::high_resolution_clock::now();
+            spdlog::debug("Preparing phase: init");
             current_renderer->init();
             auto tInit = std::chrono::high_resolution_clock::now();
 
@@ -629,8 +678,8 @@ export class window
         std::unique_ptr<resource_loader> loader;
 
         std::unique_ptr<phase> current_renderer;
-        input::keyboard_handler* keyboard_handler;
-        input::controller_handler* controller_handler;
+        input::keyboard_handler* keyboard_handler = nullptr;
+        input::controller_handler* controller_handler = nullptr;
 
         sdl::unique_window win;
         uint32_t window_width, window_height;
@@ -692,6 +741,8 @@ export class window
         double currentFPS{};
         int refreshRate{};
         bool swapchainDirty = false;
+        bool audioInitialized = false;
+        bool allocatorInitialized = false;
         std::recursive_mutex renderLock{};
 
         struct sdl_controller_closer {
@@ -701,9 +752,7 @@ export class window
         };
         std::map<sdl::JoystickID, std::unique_ptr<sdl::GameController, sdl_controller_closer>> controllers;
 
-#if !defined(NDEBUG) && __linux__
         vk::UniqueDebugUtilsMessengerEXT debugMessenger;
-#endif
     private:
         vk::Extent2D chooseSwapchainExtent(const vk::SurfaceCapabilitiesKHR& capabilities) {
             if(capabilities.currentExtent.width != std::numeric_limits<uint32_t>::max()) {
@@ -729,7 +778,15 @@ export class window
 
         void initWindow() {
             sdl::Rect rect;
-            sdl::GetDisplayBounds(config.display_index, &rect);
+            if(sdl::GetDisplayBounds(config.display_index, &rect) != 0) {
+                spdlog::warn("Failed to get SDL display bounds for display {}: {}", config.display_index, sdl::GetError());
+                rect = sdl::Rect{
+                    static_cast<int>(SDL_WINDOWPOS_CENTERED_DISPLAY(config.display_index)),
+                    static_cast<int>(SDL_WINDOWPOS_CENTERED_DISPLAY(config.display_index)),
+                    config.width == static_cast<unsigned int>(-1) ? 1280 : static_cast<int>(config.width),
+                    config.height == static_cast<unsigned int>(-1) ? 800 : static_cast<int>(config.height),
+                };
+            }
 
             if(config.x == -1) config.x = rect.x; else rect.x = config.x;
             if(config.y == -1) config.y = rect.y; else rect.y = config.y;
@@ -743,11 +800,18 @@ export class window
                 sdl::CreateWindow(config.title.c_str(), rect.x, rect.y, rect.w, rect.h,
                     SDL_WINDOW_SHOWN | (config.fullscreen ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0) | (config.workaround_no_swapchain ? 0 : SDL_WINDOW_VULKAN))
             );
+            if(!win) {
+                throw std::runtime_error(std::string("SDL_CreateWindow failed: ") + sdl::GetError());
+            }
+            const char* displayName = sdl::GetDisplayName(config.display_index);
             spdlog::info("Created window ({}x{} @ {}:{}) on monitor \"{}\"", rect.w, rect.h, rect.x, rect.y,
-                sdl::GetDisplayName(config.display_index));
+                displayName ? displayName : "unknown");
 
             sdl::DisplayMode mode;
-            sdl::GetWindowDisplayMode(win.get(), &mode);
+            if(sdl::GetWindowDisplayMode(win.get(), &mode) != 0) {
+                spdlog::warn("Failed to get SDL window display mode: {}", sdl::GetError());
+                mode = sdl::DisplayMode{};
+            }
 
             window_width = rect.w;
             window_height = rect.h;
@@ -776,32 +840,54 @@ export class window
                 spdlog::error("Failed to open audio: {}", sdl::mix::GetError());
                 return;
             }
+            audioInitialized = true;
         }
         void initVulkan() {
             std::scoped_lock lock(renderLock);
 
-            static vk::detail::DynamicLoader dl;
-            PFN_vkGetInstanceProcAddr vkGetInstanceProcAddr = dl.getProcAddress<PFN_vkGetInstanceProcAddr>("vkGetInstanceProcAddr");
+            auto vkGetInstanceProcAddr = reinterpret_cast<PFN_vkGetInstanceProcAddr>(sdl::vk::GetVkGetInstanceProcAddr());
+            if(!vkGetInstanceProcAddr) {
+                static vk::detail::DynamicLoader dl;
+                vkGetInstanceProcAddr = dl.getProcAddress<PFN_vkGetInstanceProcAddr>("vkGetInstanceProcAddr");
+            }
+            if(!vkGetInstanceProcAddr) {
+                throw std::runtime_error("Failed to load Vulkan vkGetInstanceProcAddr");
+            }
             VULKAN_HPP_DEFAULT_DISPATCHER.init(vkGetInstanceProcAddr);
+            spdlog::debug("Initialized Vulkan dispatch loader");
 
-            std::vector<const char*> layers = {
-                #if !defined(NDEBUG) && __linux__ // WINE does not support validation layers
-                    "VK_LAYER_KHRONOS_validation",
-                #endif
-            };
+            bool validationEnabled = env_truthy("DREAMRENDER_VULKAN_VALIDATION") || env_truthy("OPENXMB_VULKAN_VALIDATION");
+#if !defined(NDEBUG) && __linux__
+            validationEnabled = true;
+#endif
+            std::vector<const char*> layers;
             std::vector<const char*> extensions = {
-                #if !defined(NDEBUG) && __linux__
-                    vk::EXTDebugUtilsExtensionName,
-                #endif
                 vk::KHRGetPhysicalDeviceProperties2ExtensionName,
             };
+            if(validationEnabled) {
+                auto availableLayers = vk::enumerateInstanceLayerProperties();
+                auto layerIt = std::ranges::find_if(availableLayers, [](const auto& layer) {
+                    return std::string_view{layer.layerName} == "VK_LAYER_KHRONOS_validation";
+                });
+                if(layerIt != availableLayers.end()) {
+                    layers.push_back("VK_LAYER_KHRONOS_validation");
+                    extensions.push_back(vk::EXTDebugUtilsExtensionName);
+                } else {
+                    spdlog::warn("Vulkan validation requested, but VK_LAYER_KHRONOS_validation is not available");
+                    validationEnabled = false;
+                }
+            }
 
             if(!config.headless && !config.workaround_no_swapchain) {
                 uint32_t sdlExtensionCount = 0;
-                sdl::vk::GetInstanceExtensions(win.get(), &sdlExtensionCount, nullptr);
+                if(!sdl::vk::GetInstanceExtensions(win.get(), &sdlExtensionCount, nullptr)) {
+                    throw std::runtime_error(std::string("SDL_Vulkan_GetInstanceExtensions failed: ") + sdl::GetError());
+                }
 
                 std::vector<const char*> sdlExtensions(sdlExtensionCount);
-                sdl::vk::GetInstanceExtensions(win.get(), &sdlExtensionCount, sdlExtensions.data());
+                if(!sdl::vk::GetInstanceExtensions(win.get(), &sdlExtensionCount, sdlExtensions.data())) {
+                    throw std::runtime_error(std::string("SDL_Vulkan_GetInstanceExtensions failed: ") + sdl::GetError());
+                }
                 std::ranges::copy(sdlExtensions, std::back_inserter(extensions));
             }
 
@@ -829,17 +915,19 @@ export class window
             instance = vk::createInstanceUnique(inst_info);
             VULKAN_HPP_DEFAULT_DISPATCHER.init(*instance);
 
-#if !defined(NDEBUG) && __linux__
-            debugMessenger = instance->createDebugUtilsMessengerEXTUnique(vk::DebugUtilsMessengerCreateInfoEXT({},
+            if(validationEnabled) {
+                debugMessenger = instance->createDebugUtilsMessengerEXTUnique(vk::DebugUtilsMessengerCreateInfoEXT({},
                     vk::DebugUtilsMessageSeverityFlagBitsEXT::eError | vk::DebugUtilsMessageSeverityFlagBitsEXT::eWarning | vk::DebugUtilsMessageSeverityFlagBitsEXT::eVerbose | vk::DebugUtilsMessageSeverityFlagBitsEXT::eInfo,
                     vk::DebugUtilsMessageTypeFlagBitsEXT::eGeneral | vk::DebugUtilsMessageTypeFlagBitsEXT::eValidation | vk::DebugUtilsMessageTypeFlagBitsEXT::ePerformance,
                     debugCallback));
-#endif
+            }
             spdlog::info("Initialized Vulkan with {} layer(s) and {} extension(s)", layers.size(), extensions.size());
 
             if(!config.headless && !config.workaround_no_swapchain) {
-                VkSurfaceKHR surface_;
-                sdl::vk::CreateSurface(win.get(), instance.get(), &surface_);
+                VkSurfaceKHR surface_ = VK_NULL_HANDLE;
+                if(!sdl::vk::CreateSurface(win.get(), instance.get(), &surface_) || surface_ == VK_NULL_HANDLE) {
+                    throw std::runtime_error(std::string("SDL_Vulkan_CreateSurface failed: ") + sdl::GetError());
+                }
                 vk::detail::ObjectDestroy<vk::Instance, vk::DispatchLoaderDynamic> deleter(instance.get(), nullptr, instance.getDispatch());
                 surface = vk::UniqueSurfaceKHR(surface_, deleter);
             }
@@ -907,7 +995,12 @@ export class window
 
             deviceProperties = physicalDevice.getProperties();
             queueFamilyIndices = findQueueFamilies(physicalDevice);
-            if(!config.headless && !config.workaround_no_swapchain) swapchainSupport = querySwapChainSupport(physicalDevice);
+            if(!config.headless && !config.workaround_no_swapchain) {
+                swapchainSupport = querySwapChainSupport(physicalDevice);
+                if(swapchainSupport.formats.empty() || swapchainSupport.presentModes.empty()) {
+                    throw std::runtime_error("Selected Vulkan device has no compatible swapchain formats or present modes");
+                }
+            }
             spdlog::info("Using video device {} of type {}", std::string{deviceProperties.deviceName}, vk::to_string(deviceProperties.deviceType));
 
             vk::SampleCountFlags supportedSamples = deviceProperties.limits.framebufferColorSampleCounts;
@@ -1046,6 +1139,7 @@ export class window
             vma::VulkanFunctions functs{instance.getDispatch().vkGetInstanceProcAddr, device.getDispatch().vkGetDeviceProcAddr};
             allocator_info.setPVulkanFunctions(&functs);
             allocator = vma::createAllocator(allocator_info);
+            allocatorInitialized = true;
 
             // Upload command buffers publish resources for shader and vertex reads, so keep
             // them on the graphics family until cross-family ownership transfers are added.
@@ -1161,6 +1255,12 @@ export class window
 
             if(!findQueueFamilies(phyDev).isComplete())
                 score = 0;
+            if(score > 0 && !config.headless && !config.workaround_no_swapchain) {
+                auto support = querySwapChainSupport(phyDev);
+                if(support.formats.empty() || support.presentModes.empty()) {
+                    score = 0;
+                }
+            }
 
             return score;
         }

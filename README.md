@@ -131,6 +131,7 @@ To build the included examples, you will need the engine's dependencies installe
 
 *   **Linux (APT):** `libvulkan-dev`, `libsdl2-dev`, `libsdl2-image-dev`, `libsdl2-mixer-dev`, `libglm-dev`, `libfreetype-dev`, `glslang-tools`.
 *   **macOS (Homebrew):** `vulkan-sdk`, `sdl2`, `sdl2_image`, `sdl2_mixer`, `glm`, `freetype`, `glslang`.
+*   **Windows (vcpkg):** `sdl2[vulkan]`, `sdl2-image`, `sdl2-mixer`, `freetype`, `glm`, `harfbuzz`, plus the Vulkan SDK.
 
 ### Build Steps
 
@@ -147,6 +148,14 @@ cmake --build build
 
 # Run an example
 ./build/examples/simple
+```
+
+On Windows, prefer the provided vcpkg presets after setting `VCPKG_ROOT`:
+
+```powershell
+$env:VCPKG_ROOT = "C:/dev/vcpkg"
+cmake --preset windows-vcpkg-dev
+cmake --build --preset windows-vcpkg-dev
 ```
 
 ## Acknowledgements

@@ -20,7 +20,7 @@ module;
 
 #include <glm/ext/vector_int2.hpp>
 
-#include <freetype2/ft2build.h>
+#include <ft2build.h>
 #include <freetype/freetype.h>
 #ifdef DREAMRENDER_USE_HARFBUZZ
 #include <harfbuzz/hb.h>

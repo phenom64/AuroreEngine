@@ -6,6 +6,9 @@
 module;
 
 #include <cmath>
+#include <array>
+#include <bit>
+#include <concepts>
 #include <cstdint>
 #include <filesystem>
 #include <format>
@@ -13,6 +16,7 @@ module;
 #include <iostream>
 #include <map>
 #include <span>
+#include <type_traits>
 #include <vector>
 
 #ifdef __GNUG__

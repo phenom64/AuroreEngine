@@ -15,6 +15,7 @@ module;
 #include <mutex>
 #include <queue>
 #include <span>
+#include <stdexcept>
 #include <string_view>
 #include <thread>
 #include <variant>
@@ -302,6 +303,9 @@ export class resource_loader
                             device.resetFences(fence.get());
                         } catch(...) {
                         }
+                    }
+                    if(!okay && !error) {
+                        error = std::make_exception_ptr(std::runtime_error("Failed loading " + task.source_name()));
                     }
 
                     task.state->store(loading_state::loaded, std::memory_order_release);

@@ -3,10 +3,12 @@ set(EXAMPLES
   font_renderer
   image_renderer
   gui_renderer
-  transparency
   simple_renderer
   input
 )
+if(UNIX AND NOT APPLE)
+  list(APPEND EXAMPLES transparency)
+endif()
 
 foreach(EXAMPLE ${EXAMPLES})
   add_executable(${EXAMPLE} ${EXAMPLE}.cpp)
@@ -15,4 +17,6 @@ foreach(EXAMPLE ${EXAMPLES})
   target_compile_options(${EXAMPLE} PRIVATE --embed-dir=${CMAKE_CURRENT_SOURCE_DIR})
 endforeach()
 
-target_link_libraries(transparency PRIVATE X11)
+if(TARGET transparency)
+  target_link_libraries(transparency PRIVATE X11)
+endif()
