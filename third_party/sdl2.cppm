@@ -6,6 +6,7 @@
 module;
 
 #include <memory>
+#include <stdexcept>
 
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_events.h>
@@ -139,6 +140,7 @@ export namespace sdl {
     };
     namespace PixelFormatEnumVales {
         constexpr PixelFormatEnum UNKNOWN = SDL_PIXELFORMAT_UNKNOWN;
+        constexpr PixelFormatEnum RGBA32 = SDL_PIXELFORMAT_RGBA32;
         constexpr PixelFormatEnum RGBA8888 = SDL_PIXELFORMAT_RGBA8888;
         constexpr PixelFormatEnum ARGB8888 = SDL_PIXELFORMAT_ARGB8888;
         constexpr PixelFormatEnum ABGR8888 = SDL_PIXELFORMAT_ABGR8888;
@@ -253,6 +255,7 @@ export namespace sdl {
 
     namespace vk {
         ALIAS_FUNCTION(GetInstanceExtensions, SDL_Vulkan_GetInstanceExtensions);
+        ALIAS_FUNCTION(GetVkGetInstanceProcAddr, SDL_Vulkan_GetVkGetInstanceProcAddr);
         ALIAS_FUNCTION(CreateSurface, SDL_Vulkan_CreateSurface);
     }
 };
@@ -261,9 +264,12 @@ export namespace sdl {
 
     struct initializer {
         initializer() {
-            SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS |
+            if(SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS |
                 SDL_INIT_GAMECONTROLLER | SDL_INIT_HAPTIC | SDL_INIT_JOYSTICK |
-                SDL_INIT_AUDIO);
+                SDL_INIT_AUDIO) < 0)
+            {
+                throw std::runtime_error(std::string("SDL_Init failed: ") + SDL_GetError());
+            }
         }
         ~initializer() {
             SDL_Quit();

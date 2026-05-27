@@ -9,23 +9,50 @@ module;
 #include <termios.h>
 #include <unistd.h> // For STDIN_FILENO
 #endif
+#if defined(_WIN32) && !defined(STDIN_FILENO)
+#define STDIN_FILENO 0
+#endif
 
 #include <algorithm>
+#include <cstdlib>
 #include <cstdint>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
 #include <iterator>
 #include <iostream>
+#include <limits>
 #include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <set>
+#include <sstream>
+#include <string>
+#include <string_view>
+#include <stdexcept>
 #include <thread>
 #include <utility>
 #include <vector>
 
+#ifdef SDL_PIXELFORMAT_RGBA32
+#undef SDL_PIXELFORMAT_RGBA32
+#endif
+#ifdef SDL_WINDOW_FULLSCREEN
+#undef SDL_WINDOW_FULLSCREEN
+#endif
+#ifdef SDL_WINDOW_FULLSCREEN_DESKTOP
+#undef SDL_WINDOW_FULLSCREEN_DESKTOP
+#endif
+#ifdef SDL_WINDOW_SHOWN
+#undef SDL_WINDOW_SHOWN
+#endif
+#ifdef SDL_WINDOW_VULKAN
+#undef SDL_WINDOW_VULKAN
+#endif
+#include <SDL2/SDL_video.h>
+#include <SDL2/SDL_vulkan.h>
 #include <vulkan/vulkan_core.h>
 #include <vulkan/vulkan_hpp_macros.hpp>
 
@@ -119,18 +146,54 @@ export struct window_config {
     vk::PresentModeKHR preferredPresentMode = vk::PresentModeKHR::eFifoRelaxed;
     int fpsLimit = -1;
     vk::SampleCountFlagBits sampleCount = vk::SampleCountFlagBits::e1;
+    bool profileFrames = false;
+    uint64_t profileFrameInterval = 120;
 
     bool workaround_no_swapchain = false;
 };
 
+static std::filesystem::path env_path(const char* name) {
+    const char* value = std::getenv(name);
+    if(value && *value) {
+        return value;
+    }
+    return {};
+}
+
 static std::filesystem::path get_cache_dir() {
-#if __linux__
-    return std::filesystem::path{std::getenv("HOME")} / ".cache" / "dreamrender";
-#elif defined(_WIN32)
-    return std::filesystem::path{std::getenv("LOCALAPPDATA")} / "DreamRender" / "Cache";
+#if defined(_WIN32)
+    if(auto path = env_path("LOCALAPPDATA"); !path.empty()) {
+        return path / "DreamRender" / "Cache";
+    }
+    if(auto path = env_path("APPDATA"); !path.empty()) {
+        return path / "DreamRender" / "Cache";
+    }
+#elif defined(__APPLE__)
+    if(auto path = env_path("HOME"); !path.empty()) {
+        return path / "Library" / "Caches" / "dreamrender";
+    }
+#elif defined(__linux__)
+    if(auto path = env_path("XDG_CACHE_HOME"); !path.empty()) {
+        return path / "dreamrender";
+    }
+    if(auto path = env_path("HOME"); !path.empty()) {
+        return path / ".cache" / "dreamrender";
+    }
 #else
-    return std::filesystem::temp_directory_path() / "dreamrender";
+    if(auto path = env_path("HOME"); !path.empty()) {
+        return path / ".cache" / "dreamrender";
+    }
 #endif
+    return std::filesystem::temp_directory_path() / "dreamrender";
+}
+
+static bool env_truthy(const char* name) {
+    const char* value = std::getenv(name);
+    if(!value) {
+        return false;
+    }
+    std::string_view sv{value};
+    return sv == "1" || sv == "true" || sv == "TRUE" || sv == "on" || sv == "ON" || sv == "yes" || sv == "YES";
 }
 
 export class window
@@ -142,17 +205,33 @@ export class window
             spdlog::debug("Destroying window");
 
             std::scoped_lock lock(renderLock);
-            device->waitIdle();
-            {
-                auto data = device->getPipelineCacheData(pipelineCache.get());
-                spdlog::debug("Saving pipeline cache of {} bytes", data.size()*sizeof(decltype(data)::value_type));
-                auto path = get_cache_dir() / config.name / "pipeline_cache.bin";
 
-                if(!std::filesystem::exists(path.parent_path()))
-                    std::filesystem::create_directories(path.parent_path());
+            if(device) {
+                try {
+                    device->waitIdle();
+                } catch(const std::exception& e) {
+                    spdlog::warn("Failed to wait for device idle during shutdown: {}", e.what());
+                }
 
-                std::ofstream out(path, std::ios::binary);
-                std::ranges::copy(data, std::ostream_iterator<uint8_t>(out));
+                if(pipelineCache) {
+                    try {
+                        auto data = device->getPipelineCacheData(pipelineCache.get());
+                        spdlog::debug("Saving pipeline cache of {} bytes", data.size()*sizeof(decltype(data)::value_type));
+                        auto path = get_cache_dir() / config.name / "pipeline_cache.bin";
+
+                        if(!std::filesystem::exists(path.parent_path()))
+                            std::filesystem::create_directories(path.parent_path());
+
+                        std::ofstream out(path, std::ios::binary);
+                        if(out) {
+                            std::ranges::copy(data, std::ostream_iterator<uint8_t>(out));
+                        } else {
+                            spdlog::warn("Failed to open pipeline cache for writing: {}", path.string());
+                        }
+                    } catch(const std::exception& e) {
+                        spdlog::warn("Failed to save pipeline cache: {}", e.what());
+                    }
+                }
             }
             current_renderer.reset();
             loader.reset();
@@ -160,10 +239,19 @@ export class window
             headlessTextures.clear();
             headlessOutputBuffers.clear();
             headlessOutputAllocations.clear();
-            allocator.destroy();
+            if(allocatorInitialized) {
+                try {
+                    allocator.destroy();
+                } catch(const std::exception& e) {
+                    spdlog::warn("Failed to destroy Vulkan memory allocator: {}", e.what());
+                }
+                allocatorInitialized = false;
+            }
 
-            if(!config.headless) {
+            if(audioInitialized) {
+                sdl::mix::CloseAudio();
                 sdl::mix::Quit();
+                audioInitialized = false;
             }
         }
 
@@ -234,13 +322,25 @@ export class window
             if(const char* c = std::getenv("DREAMRENDER_NO_SWAPCHAIN")) {
                 config.workaround_no_swapchain = (std::string_view{c} == "1");
             }
+            if(const char* c = std::getenv("DREAMRENDER_PROFILE_FRAMES")) {
+                std::string_view sv{c};
+                config.profileFrames = sv == "1" || sv == "true" || sv == "TRUE";
+            }
+            if(const char* c = std::getenv("DREAMRENDER_PROFILE_FRAME_INTERVAL")) {
+                config.profileFrameInterval = std::max<uint64_t>(1, std::stoull(c));
+            }
             static sdl::initializer sdl_init;
             if(!config.headless) {
+                spdlog::debug("Initializing SDL window");
                 initWindow();
+                spdlog::debug("Initializing SDL_mixer audio");
                 initAudio();
+                spdlog::debug("Initializing SDL input");
                 initInput();
             }
+            spdlog::debug("Initializing Vulkan");
             initVulkan();
+            spdlog::debug("Window initialization complete");
         }
         void loop() {
             startTime = std::chrono::steady_clock::now();
@@ -251,6 +351,13 @@ export class window
             int currentFrame = 0;
             vk::Result r{};
             for(;;) {
+                auto frameStart = std::chrono::steady_clock::now();
+                auto afterEvents = frameStart;
+                auto afterLimiter = frameStart;
+                auto afterFence = frameStart;
+                auto afterAcquire = frameStart;
+                auto afterRender = frameStart;
+                auto afterPresent = frameStart;
                 if(config.headless) {
                     if(config.headless_frames > 0 && totalFrameNumber >= config.headless_frames) {
                         spdlog::info("Finished rendering {} frames", totalFrameNumber);
@@ -267,6 +374,8 @@ export class window
                     if(quit) {
                         return;
                     }
+                    afterEvents = std::chrono::steady_clock::now();
+                    afterLimiter = afterEvents;
                 } else {
                     bool quit = false;
                     handle_sdl_events(quit);
@@ -275,6 +384,7 @@ export class window
                     }
 
                     auto now = std::chrono::steady_clock::now();
+                    afterEvents = now;
                     auto dt = std::chrono::duration<double>(now - lastFrame).count();
 
                     // Honour FPS limit if set — sleep until target time based on lastFrame
@@ -287,12 +397,20 @@ export class window
                         }
                     }
                     lastFrame = now;
+                    afterLimiter = now;
                 }
 
                 std::scoped_lock lock(renderLock);
                 r = device->waitForFences(inFlightFences[currentFrame], true, UINT64_MAX);
                 if(r != vk::Result::eSuccess)
                     spdlog::error("Waiting for inFlightFences[{}] failed with result {}", currentFrame, vk::to_string(r));
+                afterFence = std::chrono::steady_clock::now();
+
+                if(swapchainDirty && !config.headless && !config.workaround_no_swapchain) {
+                    spdlog::debug("Swapchain marked dirty; recreating before acquire");
+                    recreateSwapchain();
+                    continue;
+                }
 
                 unsigned int imageIndex = 0;
                 if(config.headless || config.workaround_no_swapchain) {
@@ -351,6 +469,7 @@ export class window
                     vk::PipelineStageFlags waitStages = vk::PipelineStageFlagBits::eColorAttachmentOutput;
                     vk::SubmitInfo submitInfo(0, {}, {}, 1, &commandBuffer, 1, &imageAvailableSemaphores[currentFrame].get());
                     graphicsQueue.submit(submitInfo, {}); // no fence here, we just don't give a shit anymore
+                    afterAcquire = std::chrono::steady_clock::now();
                 } else {
                     std::tie(r, imageIndex) = device->acquireNextImageKHR(swapchain.get(), UINT64_MAX, imageAvailableSemaphores[currentFrame].get());
                     if(r == vk::Result::eErrorOutOfDateKHR) {
@@ -371,6 +490,7 @@ export class window
                         if(r != vk::Result::eSuccess)
                             spdlog::error("Waiting for imagesInFlight[{}] failed with result {}", imageIndex, vk::to_string(r));
                     }
+                    afterAcquire = std::chrono::steady_clock::now();
                 }
                 imagesInFlight[imageIndex] = inFlightFences[currentFrame];
 
@@ -379,6 +499,7 @@ export class window
                 if(!current_renderer)
                     throw std::runtime_error("No renderer set!");
                 current_renderer->render(imageIndex, imageAvailableSemaphores[currentFrame].get(), renderFinishedSemaphores[currentFrame].get(), inFlightFences[currentFrame]);
+                afterRender = std::chrono::steady_clock::now();
 
                 if(config.headless || config.workaround_no_swapchain) {
                     device->resetFences(headlessFences[imageIndex].get());
@@ -401,6 +522,7 @@ export class window
                     vk::PipelineStageFlags waitStages = vk::PipelineStageFlagBits::eColorAttachmentOutput;
                     vk::SubmitInfo submitInfo(1, &renderFinishedSemaphores[currentFrame].get(), &waitStages, 1, &commandBuffer, 0, {});
                     graphicsQueue.submit(submitInfo, headlessFences[imageIndex].get()); // we need this fence, or everything explodes
+                    afterPresent = std::chrono::steady_clock::now();
                 } else {
                     vk::PresentInfoKHR present_info(renderFinishedSemaphores[currentFrame].get(), swapchain.get(), imageIndex);
                     r = presentQueue.presentKHR(present_info);
@@ -410,6 +532,23 @@ export class window
                     } else if(r != vk::Result::eSuccess) {
                         spdlog::error("Present failed with result {}", vk::to_string(r));
                     }
+                    afterPresent = std::chrono::steady_clock::now();
+                }
+
+                uint64_t profileInterval = std::max<uint64_t>(1, config.profileFrameInterval);
+                if(config.profileFrames && totalFrameNumber % profileInterval == 0) {
+                    auto ms = [](auto duration) {
+                        return std::chrono::duration<double, std::milli>(duration).count();
+                    };
+                    spdlog::debug("Frame {} CPU timings: events/limit/fence/acquire/render/present/total = {:.3f}/{:.3f}/{:.3f}/{:.3f}/{:.3f}/{:.3f}/{:.3f} ms",
+                        totalFrameNumber,
+                        ms(afterEvents - frameStart),
+                        ms(afterLimiter - afterEvents),
+                        ms(afterFence - afterLimiter),
+                        ms(afterAcquire - afterFence),
+                        ms(afterRender - afterAcquire),
+                        ms(afterPresent - afterRender),
+                        ms(afterPresent - frameStart));
                 }
 
                 currentFrame = (currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
@@ -438,14 +577,28 @@ export class window
             std::scoped_lock lock(renderLock);
             spdlog::debug("(Re)Creating swapchain");
 
+            if(config.headless || config.workaround_no_swapchain) {
+                return;
+            }
+
             if(recreate) {
-                graphicsQueue.waitIdle();
+                device->waitIdle();
+            }
+
+            swapchainSupport = querySwapChainSupport(physicalDevice);
+            if(swapchainSupport.formats.empty() || swapchainSupport.presentModes.empty()) {
+                throw std::runtime_error("Swapchain support is incomplete");
             }
 
             auto presentModeIt = std::ranges::find_if(swapchainSupport.presentModes, [this](auto p){
                 return p == config.preferredPresentMode;
             });
             swapchainPresentMode = presentModeIt == swapchainSupport.presentModes.end() ? swapchainSupport.presentModes[0] : *presentModeIt;
+            swapchainExtent = chooseSwapchainExtent(swapchainSupport.capabilities);
+            swapchainImageCount = swapchainSupport.capabilities.minImageCount + 1;
+            if(swapchainSupport.capabilities.maxImageCount > 0) {
+                swapchainImageCount = std::min(swapchainImageCount, swapchainSupport.capabilities.maxImageCount);
+            }
 
             spdlog::debug("Swapchain of format {}, present mode {}, extent {}x{} and {} images (composite alpha: {})",
                 vk::to_string(swapchainFormat.format), vk::to_string(swapchainPresentMode),
@@ -459,11 +612,14 @@ export class window
                 swapchainFormat.format, swapchainFormat.colorSpace,
                 swapchainExtent, 1, usage);
             swapchain_info.setPresentMode(swapchainPresentMode);
+            swapchain_info.setOldSwapchain(recreate ? swapchain.get() : vk::SwapchainKHR{});
             swapchain_info.setCompositeAlpha(vk::CompositeAlphaFlagBitsKHR::eInherit);
             if(swapchainSupport.capabilities.supportedCompositeAlpha & vk::CompositeAlphaFlagBitsKHR::ePreMultiplied)
                 swapchain_info.setCompositeAlpha(vk::CompositeAlphaFlagBitsKHR::ePreMultiplied);
-            swapchain = device->createSwapchainKHRUnique(swapchain_info);
+            auto newSwapchain = device->createSwapchainKHRUnique(swapchain_info);
+            swapchain = std::move(newSwapchain);
             swapchainImages = device->getSwapchainImagesKHR(swapchain.get());
+            swapchainImageCount = static_cast<uint32_t>(swapchainImages.size());
 
             swapchainImageViews.clear();
             swapchainImageViewsRaw.clear();
@@ -474,6 +630,8 @@ export class window
                 swapchainImageViews.push_back(device->createImageViewUnique(view_info));
                 swapchainImageViewsRaw.push_back(swapchainImageViews.back().get());
             }
+            imagesInFlight.assign(swapchainImageCount, vk::Fence());
+            swapchainDirty = false;
 
             if(recreate && current_renderer) {
                 current_renderer->prepare(swapchainImages, swapchainImageViewsRaw);
@@ -492,12 +650,16 @@ export class window
             }
 
             auto t0 = std::chrono::high_resolution_clock::now();
+            spdlog::debug("Preparing phase: preload");
             current_renderer->preload();
             auto tPreload = std::chrono::high_resolution_clock::now();
+            spdlog::debug("Preparing phase: prepare");
             current_renderer->prepare(swapchainImages, swapchainImageViewsRaw);
             auto tPrepare = std::chrono::high_resolution_clock::now();
+            spdlog::debug("Preparing phase: waitLoad");
             current_renderer->waitLoad(); // replace with loading screen
             auto tWaitLoad = std::chrono::high_resolution_clock::now();
+            spdlog::debug("Preparing phase: init");
             current_renderer->init();
             auto tInit = std::chrono::high_resolution_clock::now();
 
@@ -516,8 +678,8 @@ export class window
         std::unique_ptr<resource_loader> loader;
 
         std::unique_ptr<phase> current_renderer;
-        input::keyboard_handler* keyboard_handler;
-        input::controller_handler* controller_handler;
+        input::keyboard_handler* keyboard_handler = nullptr;
+        input::controller_handler* controller_handler = nullptr;
 
         sdl::unique_window win;
         uint32_t window_width, window_height;
@@ -578,6 +740,9 @@ export class window
         int fpsCount{};
         double currentFPS{};
         int refreshRate{};
+        bool swapchainDirty = false;
+        bool audioInitialized = false;
+        bool allocatorInitialized = false;
         std::recursive_mutex renderLock{};
 
         struct sdl_controller_closer {
@@ -587,13 +752,41 @@ export class window
         };
         std::map<sdl::JoystickID, std::unique_ptr<sdl::GameController, sdl_controller_closer>> controllers;
 
-#if !defined(NDEBUG) && __linux__
         vk::UniqueDebugUtilsMessengerEXT debugMessenger;
-#endif
     private:
+        vk::Extent2D chooseSwapchainExtent(const vk::SurfaceCapabilitiesKHR& capabilities) {
+            if(capabilities.currentExtent.width != std::numeric_limits<uint32_t>::max()) {
+                window_width = capabilities.currentExtent.width;
+                window_height = capabilities.currentExtent.height;
+                return capabilities.currentExtent;
+            }
+
+            int drawableWidth = 0;
+            int drawableHeight = 0;
+            SDL_Vulkan_GetDrawableSize(win.get(), &drawableWidth, &drawableHeight);
+            if(drawableWidth <= 0 || drawableHeight <= 0) {
+                SDL_GetWindowSize(win.get(), &drawableWidth, &drawableHeight);
+            }
+
+            window_width = static_cast<uint32_t>(std::max(1, drawableWidth));
+            window_height = static_cast<uint32_t>(std::max(1, drawableHeight));
+            return vk::Extent2D{
+                std::clamp(window_width, capabilities.minImageExtent.width, capabilities.maxImageExtent.width),
+                std::clamp(window_height, capabilities.minImageExtent.height, capabilities.maxImageExtent.height)
+            };
+        }
+
         void initWindow() {
             sdl::Rect rect;
-            sdl::GetDisplayBounds(config.display_index, &rect);
+            if(sdl::GetDisplayBounds(config.display_index, &rect) != 0) {
+                spdlog::warn("Failed to get SDL display bounds for display {}: {}", config.display_index, sdl::GetError());
+                rect = sdl::Rect{
+                    static_cast<int>(SDL_WINDOWPOS_CENTERED_DISPLAY(config.display_index)),
+                    static_cast<int>(SDL_WINDOWPOS_CENTERED_DISPLAY(config.display_index)),
+                    config.width == static_cast<unsigned int>(-1) ? 1280 : static_cast<int>(config.width),
+                    config.height == static_cast<unsigned int>(-1) ? 800 : static_cast<int>(config.height),
+                };
+            }
 
             if(config.x == -1) config.x = rect.x; else rect.x = config.x;
             if(config.y == -1) config.y = rect.y; else rect.y = config.y;
@@ -607,11 +800,18 @@ export class window
                 sdl::CreateWindow(config.title.c_str(), rect.x, rect.y, rect.w, rect.h,
                     SDL_WINDOW_SHOWN | (config.fullscreen ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0) | (config.workaround_no_swapchain ? 0 : SDL_WINDOW_VULKAN))
             );
+            if(!win) {
+                throw std::runtime_error(std::string("SDL_CreateWindow failed: ") + sdl::GetError());
+            }
+            const char* displayName = sdl::GetDisplayName(config.display_index);
             spdlog::info("Created window ({}x{} @ {}:{}) on monitor \"{}\"", rect.w, rect.h, rect.x, rect.y,
-                sdl::GetDisplayName(config.display_index));
+                displayName ? displayName : "unknown");
 
             sdl::DisplayMode mode;
-            sdl::GetWindowDisplayMode(win.get(), &mode);
+            if(sdl::GetWindowDisplayMode(win.get(), &mode) != 0) {
+                spdlog::warn("Failed to get SDL window display mode: {}", sdl::GetError());
+                mode = sdl::DisplayMode{};
+            }
 
             window_width = rect.w;
             window_height = rect.h;
@@ -640,32 +840,54 @@ export class window
                 spdlog::error("Failed to open audio: {}", sdl::mix::GetError());
                 return;
             }
+            audioInitialized = true;
         }
         void initVulkan() {
             std::scoped_lock lock(renderLock);
 
-            static vk::detail::DynamicLoader dl;
-            PFN_vkGetInstanceProcAddr vkGetInstanceProcAddr = dl.getProcAddress<PFN_vkGetInstanceProcAddr>("vkGetInstanceProcAddr");
+            auto vkGetInstanceProcAddr = reinterpret_cast<PFN_vkGetInstanceProcAddr>(sdl::vk::GetVkGetInstanceProcAddr());
+            if(!vkGetInstanceProcAddr) {
+                static vk::detail::DynamicLoader dl;
+                vkGetInstanceProcAddr = dl.getProcAddress<PFN_vkGetInstanceProcAddr>("vkGetInstanceProcAddr");
+            }
+            if(!vkGetInstanceProcAddr) {
+                throw std::runtime_error("Failed to load Vulkan vkGetInstanceProcAddr");
+            }
             VULKAN_HPP_DEFAULT_DISPATCHER.init(vkGetInstanceProcAddr);
+            spdlog::debug("Initialized Vulkan dispatch loader");
 
-            std::vector<const char*> layers = {
-                #if !defined(NDEBUG) && __linux__ // WINE does not support validation layers
-                    "VK_LAYER_KHRONOS_validation",
-                #endif
-            };
+            bool validationEnabled = env_truthy("DREAMRENDER_VULKAN_VALIDATION") || env_truthy("OPENXMB_VULKAN_VALIDATION");
+#if !defined(NDEBUG) && __linux__
+            validationEnabled = true;
+#endif
+            std::vector<const char*> layers;
             std::vector<const char*> extensions = {
-                #if !defined(NDEBUG) && __linux__
-                    vk::EXTDebugUtilsExtensionName,
-                #endif
                 vk::KHRGetPhysicalDeviceProperties2ExtensionName,
             };
+            if(validationEnabled) {
+                auto availableLayers = vk::enumerateInstanceLayerProperties();
+                auto layerIt = std::ranges::find_if(availableLayers, [](const auto& layer) {
+                    return std::string_view{layer.layerName} == "VK_LAYER_KHRONOS_validation";
+                });
+                if(layerIt != availableLayers.end()) {
+                    layers.push_back("VK_LAYER_KHRONOS_validation");
+                    extensions.push_back(vk::EXTDebugUtilsExtensionName);
+                } else {
+                    spdlog::warn("Vulkan validation requested, but VK_LAYER_KHRONOS_validation is not available");
+                    validationEnabled = false;
+                }
+            }
 
             if(!config.headless && !config.workaround_no_swapchain) {
                 uint32_t sdlExtensionCount = 0;
-                sdl::vk::GetInstanceExtensions(win.get(), &sdlExtensionCount, nullptr);
+                if(!sdl::vk::GetInstanceExtensions(win.get(), &sdlExtensionCount, nullptr)) {
+                    throw std::runtime_error(std::string("SDL_Vulkan_GetInstanceExtensions failed: ") + sdl::GetError());
+                }
 
                 std::vector<const char*> sdlExtensions(sdlExtensionCount);
-                sdl::vk::GetInstanceExtensions(win.get(), &sdlExtensionCount, sdlExtensions.data());
+                if(!sdl::vk::GetInstanceExtensions(win.get(), &sdlExtensionCount, sdlExtensions.data())) {
+                    throw std::runtime_error(std::string("SDL_Vulkan_GetInstanceExtensions failed: ") + sdl::GetError());
+                }
                 std::ranges::copy(sdlExtensions, std::back_inserter(extensions));
             }
 
@@ -693,17 +915,19 @@ export class window
             instance = vk::createInstanceUnique(inst_info);
             VULKAN_HPP_DEFAULT_DISPATCHER.init(*instance);
 
-#if !defined(NDEBUG) && __linux__
-            debugMessenger = instance->createDebugUtilsMessengerEXTUnique(vk::DebugUtilsMessengerCreateInfoEXT({},
+            if(validationEnabled) {
+                debugMessenger = instance->createDebugUtilsMessengerEXTUnique(vk::DebugUtilsMessengerCreateInfoEXT({},
                     vk::DebugUtilsMessageSeverityFlagBitsEXT::eError | vk::DebugUtilsMessageSeverityFlagBitsEXT::eWarning | vk::DebugUtilsMessageSeverityFlagBitsEXT::eVerbose | vk::DebugUtilsMessageSeverityFlagBitsEXT::eInfo,
                     vk::DebugUtilsMessageTypeFlagBitsEXT::eGeneral | vk::DebugUtilsMessageTypeFlagBitsEXT::eValidation | vk::DebugUtilsMessageTypeFlagBitsEXT::ePerformance,
                     debugCallback));
-#endif
+            }
             spdlog::info("Initialized Vulkan with {} layer(s) and {} extension(s)", layers.size(), extensions.size());
 
             if(!config.headless && !config.workaround_no_swapchain) {
-                VkSurfaceKHR surface_;
-                sdl::vk::CreateSurface(win.get(), instance.get(), &surface_);
+                VkSurfaceKHR surface_ = VK_NULL_HANDLE;
+                if(!sdl::vk::CreateSurface(win.get(), instance.get(), &surface_) || surface_ == VK_NULL_HANDLE) {
+                    throw std::runtime_error(std::string("SDL_Vulkan_CreateSurface failed: ") + sdl::GetError());
+                }
                 vk::detail::ObjectDestroy<vk::Instance, vk::DispatchLoaderDynamic> deleter(instance.get(), nullptr, instance.getDispatch());
                 surface = vk::UniqueSurfaceKHR(surface_, deleter);
             }
@@ -771,7 +995,12 @@ export class window
 
             deviceProperties = physicalDevice.getProperties();
             queueFamilyIndices = findQueueFamilies(physicalDevice);
-            if(!config.headless && !config.workaround_no_swapchain) swapchainSupport = querySwapChainSupport(physicalDevice);
+            if(!config.headless && !config.workaround_no_swapchain) {
+                swapchainSupport = querySwapChainSupport(physicalDevice);
+                if(swapchainSupport.formats.empty() || swapchainSupport.presentModes.empty()) {
+                    throw std::runtime_error("Selected Vulkan device has no compatible swapchain formats or present modes");
+                }
+            }
             spdlog::info("Using video device {} of type {}", std::string{deviceProperties.deviceName}, vk::to_string(deviceProperties.deviceType));
 
             vk::SampleCountFlags supportedSamples = deviceProperties.limits.framebufferColorSampleCounts;
@@ -910,11 +1139,14 @@ export class window
             vma::VulkanFunctions functs{instance.getDispatch().vkGetInstanceProcAddr, device.getDispatch().vkGetDeviceProcAddr};
             allocator_info.setPVulkanFunctions(&functs);
             allocator = vma::createAllocator(allocator_info);
+            allocatorInitialized = true;
 
+            // Upload command buffers publish resources for shader and vertex reads, so keep
+            // them on the graphics family until cross-family ownership transfers are added.
             loader = std::make_unique<resource_loader>(device.get(), allocator,
-                queueFamilyIndices.transferFamily.value_or(queueFamilyIndices.graphicsFamily.value()),
                 queueFamilyIndices.graphicsFamily.value(),
-                transferQueues);
+                queueFamilyIndices.graphicsFamily.value(),
+                std::vector<vk::Queue>{graphicsQueue});
 
             if(config.headless || config.workaround_no_swapchain) {
                 swapchainFormat = vk::SurfaceFormatKHR{
@@ -967,16 +1199,6 @@ export class window
                         vk::to_string(swapchainFormat.format), vk::to_string(swapchainFormat.colorSpace),
                         vk::to_string(props.linearTilingFeatures), vk::to_string(props.optimalTilingFeatures),
                         vk::to_string(props.bufferFeatures));
-                }
-
-                swapchainExtent = vk::Extent2D{
-                    std::clamp(window_width, swapchainSupport.capabilities.minImageExtent.width, swapchainSupport.capabilities.maxImageExtent.width),
-                    std::clamp(window_height, swapchainSupport.capabilities.minImageExtent.height, swapchainSupport.capabilities.maxImageExtent.height)
-                };
-
-                swapchainImageCount = swapchainSupport.capabilities.minImageCount + 1;
-                if(swapchainSupport.capabilities.maxImageCount > 0) {
-                    swapchainImageCount = std::min(swapchainImageCount, swapchainSupport.capabilities.maxImageCount);
                 }
 
                 recreateSwapchain(false);
@@ -1033,6 +1255,12 @@ export class window
 
             if(!findQueueFamilies(phyDev).isComplete())
                 score = 0;
+            if(score > 0 && !config.headless && !config.workaround_no_swapchain) {
+                auto support = querySwapChainSupport(phyDev);
+                if(support.formats.empty() || support.presentModes.empty()) {
+                    score = 0;
+                }
+            }
 
             return score;
         }
@@ -1081,6 +1309,13 @@ export class window
                     case sdl::EventType::SDL_KEYUP:
                         if(keyboard_handler)
                             keyboard_handler->key_up(event.key.keysym);
+                        break;
+                    case sdl::EventType::SDL_WINDOWEVENT:
+                        if(event.window.event == SDL_WINDOWEVENT_SIZE_CHANGED || event.window.event == SDL_WINDOWEVENT_RESIZED) {
+                            window_width = static_cast<uint32_t>(std::max(1, event.window.data1));
+                            window_height = static_cast<uint32_t>(std::max(1, event.window.data2));
+                            swapchainDirty = true;
+                        }
                         break;
                     case sdl::EventType::SDL_CONTROLLERBUTTONDOWN:
                         if(controller_handler)

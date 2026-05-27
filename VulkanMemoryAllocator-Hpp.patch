@@ -2,20 +2,21 @@ diff --git a/CMakeLists.txt b/CMakeLists.txt
 index bfb5fe3..a308936 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
-@@ -24,8 +24,8 @@ target_include_directories(VulkanMemoryAllocator-Hpp
-
+@@ -22,4 +22,6 @@ target_include_directories(VulkanMemoryAllocator-Hpp
+     INTERFACE
+         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
++        $<BUILD_INTERFACE:${vulkan-hpp_SOURCE_DIR}>
++        $<BUILD_INTERFACE:${vulkan-hpp_SOURCE_DIR}/Vulkan-Headers/include>
+         $<INSTALL_INTERFACE:include>
+ )
+@@ -30,5 +32,4 @@ target_link_libraries(VulkanMemoryAllocator-Hpp
  target_link_libraries(VulkanMemoryAllocator-Hpp
      INTERFACE
 -        Vulkan::Vulkan
 -        VulkanMemoryAllocator::VulkanMemoryAllocator
-+        Vulkan::Headers
 +        VulkanMemoryAllocator
  )
-
- install(
-@@ -47,7 +47,7 @@ install(
- )
-
+@@ -51,4 +52,4 @@ install(
  install(
 -    TARGETS VulkanMemoryAllocator-Hpp
 +    TARGETS VulkanMemoryAllocator-Hpp VulkanMemoryAllocator

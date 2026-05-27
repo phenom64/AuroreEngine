@@ -6,10 +6,18 @@
 module;
 
 #include <algorithm>
+#include <array>
+#include <atomic>
 #include <cassert>
+#include <cstring>
 #include <filesystem>
 #include <format>
+#include <fstream>
+#include <istream>
 #include <mutex>
+#include <sstream>
+#include <string>
+#include <tuple>
 #include <variant>
 #include <vector>
 
@@ -30,6 +38,17 @@ namespace dreamrender {
 
     constexpr unsigned int safe_size = 256;
 
+    static void upload_to_allocation(vma::Allocator allocator, vma::Allocation allocation, const void* src, vk::DeviceSize size) {
+        if(size == 0) {
+            return;
+        }
+
+        void* dst = allocator.mapMemory(allocation);
+        std::memcpy(dst, src, static_cast<std::size_t>(size));
+        allocator.flushAllocation(allocation, 0, size);
+        allocator.unmapMemory(allocation);
+    }
+
     std::string LoadTask::source_name() const {
         if(std::holds_alternative<std::filesystem::path>(src))
             return std::get<std::filesystem::path>(src).string();
@@ -43,7 +62,7 @@ namespace dreamrender {
 
     [[gnu::always_inline]] static bool check_state(unsigned int index, LoadTask& task) {
         loading_state state = loading_state::queued;
-        if(!task.state->compare_exchange_strong(state, loading_state::loading)) {
+        if(!task.state->compare_exchange_strong(state, loading_state::loading, std::memory_order_acq_rel, std::memory_order_acquire)) {
             spdlog::debug("[Resource Loader {}] Task {} is already destroyed", index, task.source_name());
             return false;
         }
@@ -62,6 +81,31 @@ namespace dreamrender {
             (std::holds_alternative<LoadDataView>(task.src) && std::get<LoadDataView>(task.src).type != "RAW"))
         {
             sdl::unique_surface surface;
+            auto upload_transparent_fallback = [&]() {
+                if(!check_state(index, task)) {
+                    return false;
+                } else {
+                    std::scoped_lock<std::mutex> l(lock);
+                    tex->create_image(1, 1);
+                }
+
+                const size_t uploadSize = static_cast<size_t>(tex->width) * static_cast<size_t>(tex->height) * 4;
+                if(uploadSize == 0 || uploadSize > stagingSize) {
+                    spdlog::error("[Resource Loader {}] Cannot create fallback for {}x{} texture {}", index,
+                        tex->width, tex->height, name);
+                    return false;
+                }
+
+                std::fill(decodeBuffer, decodeBuffer + uploadSize, 0x00);
+                for(size_t i = 0; i + 3 < uploadSize; i += 4) {
+                    decodeBuffer[i + 0] = 0xFF;
+                    decodeBuffer[i + 1] = 0xFF;
+                    decodeBuffer[i + 2] = 0xFF;
+                    decodeBuffer[i + 3] = 0x00;
+                }
+                upload_to_allocation(allocator, allocation, decodeBuffer, uploadSize);
+                return true;
+            };
 
             if(std::holds_alternative<std::filesystem::path>(task.src))
             {
@@ -76,49 +120,72 @@ namespace dreamrender {
             }
             if(!surface)
             {
-                spdlog::error("[Resource Loader {}] Failed to load image {}", index, name);
-                std::scoped_lock<std::mutex> l(lock);
-                if(!check_state(index, task))
+                spdlog::error("[Resource Loader {}] Failed to load image {}; using transparent fallback", index, name);
+                if(!upload_transparent_fallback())
                     return false;
-                tex->create_image(1, 1); // create fake image to avoid crash
-                return false;
             }
-
-            if(surface->format->format != sdl::PixelFormatEnum::SDL_PIXELFORMAT_RGBA32)
+            else
             {
-                sdl::unique_surface newSurface = sdl::unique_surface{sdl::ConvertSurfaceFormat(surface.get(), SDL_PIXELFORMAT_RGBA32, 0)};
-                surface = std::move(newSurface);
-            }
+                bool fallbackUploaded = false;
+                if(surface->format->format != sdl::PixelFormatEnumVales::RGBA32)
+                {
+                    sdl::unique_surface newSurface = sdl::unique_surface{sdl::ConvertSurfaceFormat(surface.get(), sdl::PixelFormatEnumVales::RGBA32, 0)};
+                    if(!newSurface) {
+                        spdlog::error("[Resource Loader {}] Failed to convert image {}; using transparent fallback", index, name);
+                        if(!upload_transparent_fallback())
+                            return false;
+                        fallbackUploaded = true;
+                    } else {
+                        surface = std::move(newSurface);
+                    }
+                }
 
-            std::size_t size = surface->w * surface->h * surface->format->BytesPerPixel;
-            if(size > stagingSize)
-            {
-                spdlog::warn("[Resource Loader {}] Image {} is too large ({} bytes), scaling it to {}x{}", index, name, size,
-                    safe_size, safe_size);
-                sdl::unique_surface newSurface = sdl::unique_surface{sdl::CreateRGBSurface(0, safe_size, safe_size, 32, 0, 0, 0, 0)};
-                sdl::BlitScaled(surface.get(), nullptr, newSurface.get(), nullptr);
-                surface = std::move(newSurface);
-                size = surface->w * surface->h * surface->format->BytesPerPixel;
-                assert(size <= stagingSize);
-            }
+                if(!fallbackUploaded)
+                {
+                    std::size_t size = surface->w * surface->h * surface->format->BytesPerPixel;
+                    if(size > stagingSize)
+                    {
+                        spdlog::warn("[Resource Loader {}] Image {} is too large ({} bytes), scaling it to {}x{}", index, name, size,
+                            safe_size, safe_size);
+                        sdl::unique_surface newSurface = sdl::unique_surface{sdl::CreateRGBSurface(0, safe_size, safe_size, 32, 0, 0, 0, 0)};
+                        if(!newSurface || sdl::BlitScaled(surface.get(), nullptr, newSurface.get(), nullptr) != 0) {
+                            spdlog::error("[Resource Loader {}] Failed to scale image {}; using transparent fallback", index, name);
+                            if(!upload_transparent_fallback())
+                                return false;
+                            fallbackUploaded = true;
+                        } else {
+                            surface = std::move(newSurface);
+                            size = surface->w * surface->h * surface->format->BytesPerPixel;
+                            assert(size <= stagingSize);
+                        }
+                    }
 
-            if(!check_state(index, task)) {
-                return false;
-            } else {
-                std::scoped_lock<std::mutex> l(lock);
-                tex->create_image(surface->w, surface->h);
-            }
+                    if(!fallbackUploaded)
+                    {
+                        if(!check_state(index, task)) {
+                            return false;
+                        } else {
+                            std::scoped_lock<std::mutex> l(lock);
+                            tex->create_image(surface->w, surface->h);
+                        }
 
-            sdl::surface_lock lock{surface.get()};
-            allocator.copyMemoryToAllocation(lock.pixels(), allocation, 0, surface->w * surface->h * 4);
+                        sdl::surface_lock lock{surface.get()};
+                        upload_to_allocation(allocator, allocation, lock.pixels(), surface->w * surface->h * 4);
+                    }
+                }
+            }
         }
         else
         {
             name = "dynamic data";
-            std::fill(decodeBuffer, decodeBuffer+stagingSize, 0x00);
+            size_t uploadSize = stagingSize;
+            if(tex->width > 0 && tex->height > 0) {
+                uploadSize = std::min(uploadSize, static_cast<size_t>(tex->width) * static_cast<size_t>(tex->height) * 4);
+            }
+
+            std::fill(decodeBuffer, decodeBuffer + uploadSize, 0x00);
             std::get<LoaderFunction>(task.src)(decodeBuffer, stagingSize);
-            allocator.copyMemoryToAllocation(decodeBuffer, allocation, 0, stagingSize);
-            allocator.flushAllocation(allocation, 0, stagingSize);
+            upload_to_allocation(allocator, allocation, decodeBuffer, uploadSize);
 
             if(!check_state(index, task)) {
                 return false;
@@ -127,7 +194,7 @@ namespace dreamrender {
 
         commandBuffer.begin(vk::CommandBufferBeginInfo());
 
-        commandBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eTransfer, {}, {}, {},
+        commandBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eTopOfPipe, vk::PipelineStageFlagBits::eTransfer, {}, {}, {},
             vk::ImageMemoryBarrier(
                 {}, vk::AccessFlagBits::eTransferWrite,
                 vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal,
@@ -138,9 +205,9 @@ namespace dreamrender {
                 {}, {static_cast<uint32_t>(tex->width), static_cast<uint32_t>(tex->height), 1})
         };
         commandBuffer.copyBufferToImage(stagingBuffer, tex->image, vk::ImageLayout::eTransferDstOptimal, copies);
-        commandBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eTransfer, {}, {}, {},
+        commandBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eFragmentShader, {}, {}, {},
             vk::ImageMemoryBarrier(
-                vk::AccessFlagBits::eTransferWrite, {},
+                vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eShaderRead,
                 vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eShaderReadOnlyOptimal,
                 vk::QueueFamilyIgnored, vk::QueueFamilyIgnored,
                 tex->image, vk::ImageSubresourceRange(vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1)));
@@ -158,8 +225,24 @@ namespace dreamrender {
         std::vector<glm::vec2> texCoords;
         std::vector<std::tuple<int, int, int>> cindices;
 
+        auto read_line = [](std::istream& stream, std::string& line) {
+            line.clear();
+
+            char c{};
+            while(stream.get(c)) {
+                if(c == '\n') {
+                    return true;
+                }
+                if(c != '\r') {
+                    line.push_back(c);
+                }
+            }
+
+            return !line.empty();
+        };
+
         std::string line;
-        while(std::getline(in, line))
+        while(read_line(in, line))
         {
             std::istringstream is(line);
             std::string type;
@@ -230,18 +313,48 @@ namespace dreamrender {
         vk::DeviceSize vertexSize = vertices.size() * sizeof(vertex_data);
         vk::DeviceSize indexOffset = vertexSize;
         vk::DeviceSize indexSize = indices.size() * sizeof(uint32_t);
+        vk::DeviceSize uploadSize = vertexSize + indexSize;
+        if(uploadSize > stagingSize) {
+            spdlog::error("[Resource Loader {}] Model {} is too large for staging buffer ({} > {} bytes)",
+                index, task.source_name(), uploadSize, stagingSize);
+            return false;
+        }
 
         void* buf = allocator.mapMemory(allocation);
-        std::ranges::copy(vertices, (vertex_data*)((uint8_t*)buf+vertexOffset));
-        std::ranges::copy(indices, (uint32_t*)((uint8_t*)buf+indexOffset));
+        if(vertexSize > 0) {
+            std::memcpy(static_cast<uint8_t*>(buf) + vertexOffset, vertices.data(), static_cast<std::size_t>(vertexSize));
+        }
+        if(indexSize > 0) {
+            std::memcpy(static_cast<uint8_t*>(buf) + indexOffset, indices.data(), static_cast<std::size_t>(indexSize));
+        }
+        allocator.flushAllocation(allocation, 0, uploadSize);
         allocator.unmapMemory(allocation);
 
         commandBuffer.begin(vk::CommandBufferBeginInfo());
         auto [dst_vertex_buffer, dst_vertex_offset] = mesh->get_vertex_buffer();
         auto [dst_index_buffer, dst_index_offset] = mesh->get_index_buffer();
 
-        commandBuffer.copyBuffer(stagingBuffer, dst_vertex_buffer, vk::BufferCopy{vertexOffset, dst_vertex_offset, vertexSize});
-        commandBuffer.copyBuffer(stagingBuffer, dst_index_buffer, vk::BufferCopy{indexOffset, dst_index_offset, indexSize});
+        std::vector<vk::BufferMemoryBarrier> uploadBarriers;
+        uploadBarriers.reserve(2);
+        if(vertexSize > 0) {
+            commandBuffer.copyBuffer(stagingBuffer, dst_vertex_buffer, vk::BufferCopy{vertexOffset, dst_vertex_offset, vertexSize});
+            uploadBarriers.emplace_back(
+                vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eVertexAttributeRead,
+                vk::QueueFamilyIgnored, vk::QueueFamilyIgnored,
+                dst_vertex_buffer, dst_vertex_offset, vertexSize);
+        }
+        if(indexSize > 0) {
+            commandBuffer.copyBuffer(stagingBuffer, dst_index_buffer, vk::BufferCopy{indexOffset, dst_index_offset, indexSize});
+            uploadBarriers.emplace_back(
+                vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eIndexRead,
+                vk::QueueFamilyIgnored, vk::QueueFamilyIgnored,
+                dst_index_buffer, dst_index_offset, indexSize);
+        }
+        if(!uploadBarriers.empty()) {
+            commandBuffer.pipelineBarrier(
+                vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eVertexInput,
+                {}, {}, uploadBarriers, {});
+        }
         commandBuffer.end();
 
         // std::string name = task.source_name();

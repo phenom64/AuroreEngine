@@ -39,7 +39,7 @@ export class phase
         void waitLoad() {
             for(auto& f : loadingFutures)
             {
-                f.wait();
+                f.get();
             }
         }
         bool ready() const {

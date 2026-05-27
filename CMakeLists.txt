@@ -1,21 +1,35 @@
 # This Source Code Form is subject to the terms of the Mozilla Public
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at https://mozilla.org/MPL/2.0/.
-cmake_minimum_required(VERSION 3.10)
+cmake_minimum_required(VERSION 3.28)
 
 project(dreams)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_SCAN_FOR_MODULES ON)
-add_compile_options(-Wno-nullability-completeness)
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+  set(_dreams_clang_scan_deps_names clang-scan-deps)
+  if(CMAKE_CXX_COMPILER_VERSION)
+    string(REGEX MATCH "^[0-9]+" _dreams_clang_major "${CMAKE_CXX_COMPILER_VERSION}")
+    if(_dreams_clang_major)
+      list(PREPEND _dreams_clang_scan_deps_names "clang-scan-deps-${_dreams_clang_major}")
+    endif()
+  endif()
+  find_program(CLANG_SCAN_DEPS_EXECUTABLE NAMES ${_dreams_clang_scan_deps_names})
+  if(NOT CLANG_SCAN_DEPS_EXECUTABLE)
+    message(FATAL_ERROR "clang-scan-deps is required for C++23 module dependency scanning with Clang.")
+  endif()
+  set(CMAKE_CXX_COMPILER_CLANG_SCAN_DEPS "${CLANG_SCAN_DEPS_EXECUTABLE}" CACHE FILEPATH "Path to clang-scan-deps" FORCE)
+  add_compile_options(-Wno-nullability-completeness)
+endif()
 
 option(DREAMS_BUILD_EXAMPLES "Build examples" OFF)
 option(DREAMS_BUILD_WITH_POSIX_THREADS "Build with POSIX threads" OFF)
 option(DREAMS_ALIAS_MODULES "CMake: Alias C++ module libraries" ON)
 option(DREAMS_FIND_PACKAGES "CMake: Find packages (if you disable this, you need to provide them)" ON)
 
-if(DREAMS_BUILD_WITH_POSIX_THREADS)
+if(DREAMS_BUILD_WITH_POSIX_THREADS AND NOT WIN32)
   add_compile_options(-pthread)
 endif()
 
@@ -50,7 +64,10 @@ FetchContent_Declare(
   GIT_REPOSITORY https://github.com/YaaZ/VulkanMemoryAllocator-Hpp.git
   GIT_TAG        73cdd838c425637c874d343ab0ceba5148189cbf
   GIT_SUBMODULES_RECURSE FALSE
-  PATCH_COMMAND  patch --forward -i ${CMAKE_CURRENT_SOURCE_DIR}/VulkanMemoryAllocator-Hpp.patch || true
+  PATCH_COMMAND  ${CMAKE_COMMAND}
+    -DVMA_HPP_SOURCE_DIR=<SOURCE_DIR>
+    -DVULKAN_HPP_SOURCE_DIR=${vulkan-hpp_SOURCE_DIR}
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/PatchVmaHpp.cmake
 )
 FetchContent_MakeAvailable(VulkanMemoryAllocator-Hpp)
 

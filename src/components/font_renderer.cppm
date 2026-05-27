@@ -20,7 +20,7 @@ module;
 
 #include <glm/ext/vector_int2.hpp>
 
-#include <freetype2/ft2build.h>
+#include <ft2build.h>
 #include <freetype/freetype.h>
 #ifdef DREAMRENDER_USE_HARFBUZZ
 #include <harfbuzz/hb.h>
@@ -441,6 +441,7 @@ export class font_renderer {
             descriptorSets = device.allocateDescriptorSets(set_info);
 
             const auto alignment = allocator.getPhysicalDeviceProperties()->limits.minUniformBufferOffsetAlignment;
+            uniformStride = aligned_size(sizeof(TextUniform), alignment);
 
             vertexPointers.clear();
             vertexMappings.clear();
@@ -474,7 +475,10 @@ export class font_renderer {
                 }
 
                 {
-                    vk::BufferCreateInfo uniform_info({}, maxTexts*sizeof(TextUniform), vk::BufferUsageFlagBits::eUniformBuffer);
+                    vk::BufferCreateInfo uniform_info(
+                        {},
+                        static_cast<vk::DeviceSize>(maxTexts) * uniformStride,
+                        vk::BufferUsageFlagBits::eUniformBuffer);
                     vma::AllocationCreateInfo ua_info({}, vma::MemoryUsage::eCpuToGpu);
                     auto [ub, ua] = allocator.createBufferUnique(uniform_info, ua_info);
                     auto& mapping = uniformMappings.emplace_back(allocator, ua.get());
@@ -538,8 +542,8 @@ export class font_renderer {
                         float x_off = pos[i].x_offset/64.0f/lineHeight;
                         float y_off = -pos[i].y_offset/64.0f/lineHeight;
                         if(compat_mode) {
-                            float x0 = cx + x_off;
-                            float y0 = cy + y_off;
+                            float x0 = cx + x_off + static_cast<float>(g.bearing.x) / lineHeight;
+                            float y0 = cy + y_off + static_cast<float>(baselinePx - g.bearing.y) / lineHeight;
                             glm::vec2 size = {static_cast<float>(g.bitmapSize.x) / lineHeight, static_cast<float>(g.bitmapSize.y) / lineHeight};
                             float invW = 1.0f / static_cast<float>(fontTexture->width);
                             float invH = 1.0f / static_cast<float>(fontTexture->height);
@@ -579,7 +583,8 @@ export class font_renderer {
                         if(!glyphs.contains(c)) c = '?';
                         const GlyphMetrics& g = glyphs.at(c);
                         if(compat_mode) {
-                            float x0 = cx; float y0 = cy;
+                            float x0 = cx + static_cast<float>(g.bearing.x) / lineHeight;
+                            float y0 = cy + static_cast<float>(baselinePx - g.bearing.y) / lineHeight;
                             glm::vec2 size = {static_cast<float>(g.bitmapSize.x) / lineHeight, static_cast<float>(g.bitmapSize.y) / lineHeight};
                             float invW = 1.0f / static_cast<float>(fontTexture->width);
                             float invH = 1.0f / static_cast<float>(fontTexture->height);
@@ -598,6 +603,10 @@ export class font_renderer {
                     }
                 }
             }
+            if(total_chars == 0) {
+                return;
+            }
+
             {
                 // Position the text run using the provided (x,y) in normalized space
                 glm::vec2 pos = glm::vec2(x, y)*2.0f - glm::vec2(1.0f);
@@ -619,6 +628,15 @@ export class font_renderer {
                     };
                 }
             }
+            allocator.flushAllocation(
+                vertexMemories[frame].get(),
+                static_cast<vk::DeviceSize>(compat_factor) * vertexOffsets[frame] * sizeof(VertexCharacter),
+                static_cast<vk::DeviceSize>(compat_factor) * total_chars * sizeof(VertexCharacter));
+            allocator.flushAllocation(
+                uniformMemories[frame].get(),
+                uniformPointers[frame].offset(uniformOffsets[frame]),
+                sizeof(TextUniform));
+
             auto itp = pipelines.find(renderPass);
             if(itp == pipelines.end() || !itp->second) {
                 spdlog::warn("[FontRenderer] Pipeline for renderPass not found; creating on-demand");
@@ -669,6 +687,13 @@ export class font_renderer {
 
 
     private:
+        static vk::DeviceSize aligned_size(vk::DeviceSize size, vk::DeviceSize alignment) {
+            if(alignment <= 1) {
+                return size;
+            }
+            return ((size + alignment - 1) / alignment) * alignment;
+        }
+
         void build_pipelines(const std::vector<vk::RenderPass>& renderPasses, vk::PipelineCache pipelineCache) {
             vk::UniqueShaderModule vertexShader = compat_mode ?
                 shaders::font_renderer::vert_compat(device) :
@@ -820,6 +845,7 @@ export class font_renderer {
         };
         std::vector<VertexCharacter*> vertexPointers;
         std::vector<aligned_wrapper<TextUniform>> uniformPointers;
+        vk::DeviceSize uniformStride{};
 
         double aspectRatio;
 
