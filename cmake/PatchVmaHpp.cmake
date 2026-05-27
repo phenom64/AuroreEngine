@@ -38,4 +38,42 @@ string(REPLACE
   "TARGETS VulkanMemoryAllocator-Hpp VulkanMemoryAllocator"
   _content "${_content}")
 
+string(REPLACE [=[
+install(
+    FILES
+        ${CMAKE_CURRENT_SOURCE_DIR}/include/vk_mem_alloc_enums.hpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/include/vk_mem_alloc_funcs.hpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/include/vk_mem_alloc_handles.hpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/include/vk_mem_alloc_structs.hpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/include/vk_mem_alloc.hpp
+    DESTINATION
+        include
+)
+]=] "" _content "${_content}")
+
+string(REPLACE [=[
+install(
+    FILES
+        ${CMAKE_CURRENT_SOURCE_DIR}/cmake/VulkanMemoryAllocator-HppConfig.cmake
+    DESTINATION
+        lib/cmake/VulkanMemoryAllocator-Hpp
+)
+]=] "" _content "${_content}")
+
+string(REPLACE [=[
+install(
+    TARGETS VulkanMemoryAllocator-Hpp VulkanMemoryAllocator
+    EXPORT VulkanMemoryAllocator-HppTargets
+)
+]=] "" _content "${_content}")
+
+string(REPLACE [=[
+install(
+    EXPORT VulkanMemoryAllocator-HppTargets
+    FILE VulkanMemoryAllocator-HppTargets.cmake
+    NAMESPACE VulkanMemoryAllocator-Hpp::
+    DESTINATION lib/cmake/VulkanMemoryAllocator-Hpp
+)
+]=] "" _content "${_content}")
+
 file(WRITE "${_vma_cmake}" "${_content}")
