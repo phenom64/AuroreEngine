@@ -80,10 +80,10 @@ export struct texture
     }
 
     ~texture() {
-        loading_state s = state->exchange(loading_state::destroyed);
+        loading_state s = state->exchange(loading_state::destroyed, std::memory_order_acq_rel);
         if(s == loading_state::loading) {
-            spdlog::debug("Waiting for texture upload to complate");
-            while(state->load() != loading_state::loaded) {}
+            spdlog::debug("Waiting for texture upload to complete");
+            state->wait(loading_state::destroyed, std::memory_order_acquire);
         }
 
         imageView.reset();
@@ -124,7 +124,7 @@ export struct texture
     int height;
 
     vk::UniqueImageView imageView;
-    bool loaded = false;
+    std::atomic_bool loaded = false;
 
     private:
     vk::ImageCreateInfo image_info;

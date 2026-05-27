@@ -50,8 +50,8 @@ export class image_renderer {
             if(compat_mode) {
                 spdlog::warn("Image Renderer: No update-after-bind support, falling back to compatibility mode");
             } else if(max_images > features.limits.maxPerStageDescriptorSamplers) {
-                spdlog::warn("Image Renderer: Max images exceeds maxPerStageDescriptorSamplers, falling back to compatibility mode");
-                compat_mode = true;
+                spdlog::warn("Image Renderer: max images ({}) exceeds maxPerStageDescriptorSamplers ({}); using update-after-bind descriptor indexing",
+                    max_images, features.limits.maxPerStageDescriptorSamplers);
             }
 
             {
@@ -62,7 +62,7 @@ export class image_renderer {
             }
             {
                 std::array<vk::DescriptorSetLayoutBinding, 1> bindings = {
-                    vk::DescriptorSetLayoutBinding(0, vk::DescriptorType::eCombinedImageSampler, compat_mode ? 1 : max_images, vk::ShaderStageFlagBits::eFragment)
+                    vk::DescriptorSetLayoutBinding(0, vk::DescriptorType::eCombinedImageSampler, compat_mode ? 1 : this->max_images, vk::ShaderStageFlagBits::eFragment)
                 };
                 vk::DescriptorBindingFlags flags = vk::DescriptorBindingFlagBits::eUpdateAfterBind | vk::DescriptorBindingFlagBits::ePartiallyBound;
                 if(compat_mode)
@@ -177,11 +177,20 @@ export class image_renderer {
         }
 
         void finish(int frame) {
+            if(frame < 0) {
+                return;
+            }
             if(compat_mode) {
+                if(static_cast<std::size_t>(frame) >= descriptorSetIndicesCompat.size()) {
+                    return;
+                }
                 descriptorSetIndicesCompat[frame] = 0;
                 return;
             }
 
+            if(static_cast<std::size_t>(frame) >= imageInfos.size()) {
+                return;
+            }
             if(imageInfos[frame].empty())
                 return;
             vk::WriteDescriptorSet write(
@@ -196,6 +205,7 @@ export class image_renderer {
                               float x, float y, float scaleX, float scaleY, glm::vec4 color = glm::vec4(1.0,1.0,1.0,1.0))
         {
             if(!iconView) return;
+            if(frame < 0 || static_cast<std::size_t>(frame) >= glassDescriptorSets.size()) return;
             vk::DescriptorImageInfo img(sampler.get(), iconView, vk::ImageLayout::eShaderReadOnlyOptimal);
             vk::WriteDescriptorSet write(glassDescriptorSets[frame], 0, 0, 1, vk::DescriptorType::eCombinedImageSampler, &img);
             device.updateDescriptorSets(write, {});
@@ -222,13 +232,24 @@ export class image_renderer {
             unsigned int index{};
             vk::DescriptorSet descriptorSet;
             if(compat_mode) {
+                if(frame < 0 || static_cast<std::size_t>(frame) >= descriptorSetsCompat.size()) {
+                    return;
+                }
+                auto& sets = descriptorSetsCompat[frame];
+                auto& set_index = descriptorSetIndicesCompat[frame];
+                if(static_cast<std::size_t>(set_index) >= sets.size()) {
+                    return;
+                }
                 index = 0;
-                descriptorSet = descriptorSetsCompat[frame][descriptorSetIndicesCompat[frame]++];
+                descriptorSet = sets[set_index++];
                 vk::WriteDescriptorSet write(
                     descriptorSet, 0, 0,
                     1, vk::DescriptorType::eCombinedImageSampler, &image_info);
                 device.updateDescriptorSets(write, {});
             } else {
+                if(frame < 0 || static_cast<std::size_t>(frame) >= imageInfos.size() || imageInfos[frame].size() >= max_images) {
+                    return;
+                }
                 index = imageInfos[frame].size();
                 descriptorSet = descriptorSets[frame];
                 imageInfos[frame].push_back(image_info);
@@ -263,13 +284,24 @@ export class image_renderer {
             unsigned int index{};
             vk::DescriptorSet descriptorSet;
             if(compat_mode) {
+                if(frame < 0 || static_cast<std::size_t>(frame) >= descriptorSetsCompat.size()) {
+                    return;
+                }
+                auto& sets = descriptorSetsCompat[frame];
+                auto& set_index = descriptorSetIndicesCompat[frame];
+                if(static_cast<std::size_t>(set_index) >= sets.size()) {
+                    return;
+                }
                 index = 0;
-                descriptorSet = descriptorSetsCompat[frame][descriptorSetIndicesCompat[frame]++];
+                descriptorSet = sets[set_index++];
                 vk::WriteDescriptorSet write(
                     descriptorSet, 0, 0,
                     1, vk::DescriptorType::eCombinedImageSampler, &image_info);
                 device.updateDescriptorSets(write, {});
             } else {
+                if(frame < 0 || static_cast<std::size_t>(frame) >= imageInfos.size() || imageInfos[frame].size() >= max_images) {
+                    return;
+                }
                 index = imageInfos[frame].size();
                 descriptorSet = descriptorSets[frame];
                 imageInfos[frame].push_back(image_info);

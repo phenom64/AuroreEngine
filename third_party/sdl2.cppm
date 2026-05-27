@@ -139,6 +139,7 @@ export namespace sdl {
     };
     namespace PixelFormatEnumVales {
         constexpr PixelFormatEnum UNKNOWN = SDL_PIXELFORMAT_UNKNOWN;
+        constexpr PixelFormatEnum RGBA32 = SDL_PIXELFORMAT_RGBA32;
         constexpr PixelFormatEnum RGBA8888 = SDL_PIXELFORMAT_RGBA8888;
         constexpr PixelFormatEnum ARGB8888 = SDL_PIXELFORMAT_ARGB8888;
         constexpr PixelFormatEnum ABGR8888 = SDL_PIXELFORMAT_ABGR8888;

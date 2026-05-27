@@ -6,6 +6,9 @@
 module;
 
 #include <cstdint>
+#include <atomic>
+#include <chrono>
+#include <exception>
 #include <filesystem>
 #include <functional>
 #include <future>
@@ -90,7 +93,10 @@ export class resource_loader
         }
 
         ~resource_loader() {
-            quit = true;
+            {
+                std::scoped_lock<std::mutex> l(lock);
+                quit = true;
+            }
             cv.notify_all();
             for(auto& t : threads) {
                 if(t.joinable()) {
@@ -243,8 +249,9 @@ export class resource_loader
                     spdlog::debug("[Resource Loader {}] Loading {}", index,
                         std::holds_alternative<std::filesystem::path>(task.src) ? std::get<std::filesystem::path>(task.src).string() : "dynamic resource");
                     auto t0 = std::chrono::high_resolution_clock::now();
-                    {
-                        bool okay;
+                    std::exception_ptr error;
+                    bool okay = false;
+                    try {
                         if(task.type == LoadType::Texture)
                         {
                             okay = load_texture(index, task, lock, device, allocator, allocation, commandBuffer.get(), cpuBuffer.get(), stagingSize, stagingBuffer);
@@ -268,7 +275,7 @@ export class resource_loader
                             device.resetFences(fence.get());
 
                             if(std::holds_alternative<texture*>(task.dst))
-                                std::get<texture*>(task.dst)->loaded = true;
+                                std::get<texture*>(task.dst)->loaded.store(true, std::memory_order_release);
                             else if(std::holds_alternative<abstract_model*>(task.dst))
                                 std::get<abstract_model*>(task.dst)->loaded = true;
 
@@ -281,10 +288,28 @@ export class resource_loader
                                 time
                             );
                         }
+                    } catch(const std::exception& e) {
+                        error = std::current_exception();
+                        spdlog::error("[Resource Loader {}] Failed loading {}: {}", index, task.source_name(), e.what());
+                    } catch(...) {
+                        error = std::current_exception();
+                        spdlog::error("[Resource Loader {}] Failed loading {} with unknown exception", index, task.source_name());
+                    }
 
-                        task.state->store(loading_state::loaded);
-                        task.state->notify_all();
+                    if(error) {
+                        try {
+                            commandBuffer.get().reset();
+                            device.resetFences(fence.get());
+                        } catch(...) {
+                        }
+                    }
 
+                    task.state->store(loading_state::loaded, std::memory_order_release);
+                    task.state->notify_all();
+
+                    if(error) {
+                        task.promise.set_exception(error);
+                    } else {
                         task.promise.set_value();
                     }
 
