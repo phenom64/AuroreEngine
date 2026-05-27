@@ -132,7 +132,7 @@ To build the included examples, you will need the engine's dependencies installe
 All platforms require Git, CMake 3.28+, Ninja, a C++23 compiler with C++ module scanning support, and a Vulkan-capable driver/GPU. On Windows, the supported compiler path is currently LLVM/Clang with `clang-scan-deps`; MSVC is blocked by the current shader/resource embedding path.
 
 *   **Linux (APT):** `libvulkan-dev`, `libsdl2-dev`, `libsdl2-image-dev`, `libsdl2-mixer-dev`, `libglm-dev`, `libfreetype-dev`, `glslang-tools`.
-*   **macOS (Homebrew):** `vulkan-sdk`, `sdl2`, `sdl2_image`, `sdl2_mixer`, `glm`, `freetype`, `glslang`.
+*   **macOS (Homebrew):** `vulkan-loader`, `molten-vk`, `sdl2`, `sdl2_image`, `sdl2_mixer`, `glm`, `freetype`, `glslang`.
 *   **Windows (vcpkg):** `sdl2[vulkan]`, `sdl2-image`, `sdl2-mixer`, `freetype`, `glm`, `harfbuzz`, `vulkan-memory-allocator`, plus the Vulkan SDK and Visual Studio Build Tools/Windows SDK.
 
 ### Build Steps
