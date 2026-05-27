@@ -9,6 +9,7 @@ module;
 #include <array>
 #include <atomic>
 #include <cassert>
+#include <cstring>
 #include <filesystem>
 #include <format>
 #include <fstream>
@@ -36,6 +37,17 @@ import vma;
 namespace dreamrender {
 
     constexpr unsigned int safe_size = 256;
+
+    static void upload_to_allocation(vma::Allocator allocator, vma::Allocation allocation, const void* src, vk::DeviceSize size) {
+        if(size == 0) {
+            return;
+        }
+
+        void* dst = allocator.mapMemory(allocation);
+        std::memcpy(dst, src, static_cast<std::size_t>(size));
+        allocator.flushAllocation(allocation, 0, size);
+        allocator.unmapMemory(allocation);
+    }
 
     std::string LoadTask::source_name() const {
         if(std::holds_alternative<std::filesystem::path>(src))
@@ -91,8 +103,7 @@ namespace dreamrender {
                     decodeBuffer[i + 2] = 0xFF;
                     decodeBuffer[i + 3] = 0x00;
                 }
-                allocator.copyMemoryToAllocation(decodeBuffer, allocation, 0, uploadSize);
-                allocator.flushAllocation(allocation, 0, uploadSize);
+                upload_to_allocation(allocator, allocation, decodeBuffer, uploadSize);
                 return true;
             };
 
@@ -159,8 +170,7 @@ namespace dreamrender {
                         }
 
                         sdl::surface_lock lock{surface.get()};
-                        allocator.copyMemoryToAllocation(lock.pixels(), allocation, 0, surface->w * surface->h * 4);
-                        allocator.flushAllocation(allocation, 0, surface->w * surface->h * 4);
+                        upload_to_allocation(allocator, allocation, lock.pixels(), surface->w * surface->h * 4);
                     }
                 }
             }
@@ -175,8 +185,7 @@ namespace dreamrender {
 
             std::fill(decodeBuffer, decodeBuffer + uploadSize, 0x00);
             std::get<LoaderFunction>(task.src)(decodeBuffer, stagingSize);
-            allocator.copyMemoryToAllocation(decodeBuffer, allocation, 0, uploadSize);
-            allocator.flushAllocation(allocation, 0, uploadSize);
+            upload_to_allocation(allocator, allocation, decodeBuffer, uploadSize);
 
             if(!check_state(index, task)) {
                 return false;
@@ -185,7 +194,7 @@ namespace dreamrender {
 
         commandBuffer.begin(vk::CommandBufferBeginInfo());
 
-        commandBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eTransfer, {}, {}, {},
+        commandBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eTopOfPipe, vk::PipelineStageFlagBits::eTransfer, {}, {}, {},
             vk::ImageMemoryBarrier(
                 {}, vk::AccessFlagBits::eTransferWrite,
                 vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal,
@@ -196,9 +205,9 @@ namespace dreamrender {
                 {}, {static_cast<uint32_t>(tex->width), static_cast<uint32_t>(tex->height), 1})
         };
         commandBuffer.copyBufferToImage(stagingBuffer, tex->image, vk::ImageLayout::eTransferDstOptimal, copies);
-        commandBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eTransfer, {}, {}, {},
+        commandBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eFragmentShader, {}, {}, {},
             vk::ImageMemoryBarrier(
-                vk::AccessFlagBits::eTransferWrite, {},
+                vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eShaderRead,
                 vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eShaderReadOnlyOptimal,
                 vk::QueueFamilyIgnored, vk::QueueFamilyIgnored,
                 tex->image, vk::ImageSubresourceRange(vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1)));
@@ -312,17 +321,40 @@ namespace dreamrender {
         }
 
         void* buf = allocator.mapMemory(allocation);
-        std::ranges::copy(vertices, (vertex_data*)((uint8_t*)buf+vertexOffset));
-        std::ranges::copy(indices, (uint32_t*)((uint8_t*)buf+indexOffset));
-        allocator.unmapMemory(allocation);
+        if(vertexSize > 0) {
+            std::memcpy(static_cast<uint8_t*>(buf) + vertexOffset, vertices.data(), static_cast<std::size_t>(vertexSize));
+        }
+        if(indexSize > 0) {
+            std::memcpy(static_cast<uint8_t*>(buf) + indexOffset, indices.data(), static_cast<std::size_t>(indexSize));
+        }
         allocator.flushAllocation(allocation, 0, uploadSize);
+        allocator.unmapMemory(allocation);
 
         commandBuffer.begin(vk::CommandBufferBeginInfo());
         auto [dst_vertex_buffer, dst_vertex_offset] = mesh->get_vertex_buffer();
         auto [dst_index_buffer, dst_index_offset] = mesh->get_index_buffer();
 
-        commandBuffer.copyBuffer(stagingBuffer, dst_vertex_buffer, vk::BufferCopy{vertexOffset, dst_vertex_offset, vertexSize});
-        commandBuffer.copyBuffer(stagingBuffer, dst_index_buffer, vk::BufferCopy{indexOffset, dst_index_offset, indexSize});
+        std::vector<vk::BufferMemoryBarrier> uploadBarriers;
+        uploadBarriers.reserve(2);
+        if(vertexSize > 0) {
+            commandBuffer.copyBuffer(stagingBuffer, dst_vertex_buffer, vk::BufferCopy{vertexOffset, dst_vertex_offset, vertexSize});
+            uploadBarriers.emplace_back(
+                vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eVertexAttributeRead,
+                vk::QueueFamilyIgnored, vk::QueueFamilyIgnored,
+                dst_vertex_buffer, dst_vertex_offset, vertexSize);
+        }
+        if(indexSize > 0) {
+            commandBuffer.copyBuffer(stagingBuffer, dst_index_buffer, vk::BufferCopy{indexOffset, dst_index_offset, indexSize});
+            uploadBarriers.emplace_back(
+                vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eIndexRead,
+                vk::QueueFamilyIgnored, vk::QueueFamilyIgnored,
+                dst_index_buffer, dst_index_offset, indexSize);
+        }
+        if(!uploadBarriers.empty()) {
+            commandBuffer.pipelineBarrier(
+                vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eVertexInput,
+                {}, {}, uploadBarriers, {});
+        }
         commandBuffer.end();
 
         // std::string name = task.source_name();

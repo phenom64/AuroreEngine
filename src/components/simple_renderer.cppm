@@ -118,12 +118,17 @@ export class simple_renderer {
         void renderGeneric(vk::CommandBuffer cmd, int frame, vk::RenderPass renderPass, std::ranges::range auto vertices, params p = {})
             requires(std::same_as<std::ranges::range_value_t<decltype(vertices)>, vertex_data>)
         {
+            const auto firstVertex = vertexCounts[frame];
             std::copy(vertices.begin(), vertices.end(), vertexBufferPointers[frame]+vertexCounts[frame]);
+            allocator.flushAllocation(
+                vertexBufferAllocations[frame].get(),
+                static_cast<vk::DeviceSize>(firstVertex) * sizeof(vertex_data),
+                static_cast<vk::DeviceSize>(vertices.size()) * sizeof(vertex_data));
 
             cmd.bindVertexBuffers(0, vertexBuffers[frame].get(), {0});
             cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, pipelines[renderPass].get());
             cmd.pushConstants(pipelineLayout.get(), vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, sizeof(params), &p);
-            cmd.draw(vertices.size(), 1, vertexCounts[frame], 0);
+            cmd.draw(vertices.size(), 1, firstVertex, 0);
 
             vertexCounts[frame] += vertices.size();
         }

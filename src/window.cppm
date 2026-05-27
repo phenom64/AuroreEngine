@@ -11,6 +11,7 @@ module;
 #endif
 
 #include <algorithm>
+#include <cstdlib>
 #include <cstdint>
 #include <chrono>
 #include <filesystem>
@@ -145,14 +146,39 @@ export struct window_config {
     bool workaround_no_swapchain = false;
 };
 
+static std::filesystem::path env_path(const char* name) {
+    const char* value = std::getenv(name);
+    if(value && *value) {
+        return value;
+    }
+    return {};
+}
+
 static std::filesystem::path get_cache_dir() {
-#if __linux__
-    return std::filesystem::path{std::getenv("HOME")} / ".cache" / "dreamrender";
-#elif defined(_WIN32)
-    return std::filesystem::path{std::getenv("LOCALAPPDATA")} / "DreamRender" / "Cache";
+#if defined(_WIN32)
+    if(auto path = env_path("LOCALAPPDATA"); !path.empty()) {
+        return path / "DreamRender" / "Cache";
+    }
+    if(auto path = env_path("APPDATA"); !path.empty()) {
+        return path / "DreamRender" / "Cache";
+    }
+#elif defined(__APPLE__)
+    if(auto path = env_path("HOME"); !path.empty()) {
+        return path / "Library" / "Caches" / "dreamrender";
+    }
+#elif defined(__linux__)
+    if(auto path = env_path("XDG_CACHE_HOME"); !path.empty()) {
+        return path / "dreamrender";
+    }
+    if(auto path = env_path("HOME"); !path.empty()) {
+        return path / ".cache" / "dreamrender";
+    }
 #else
-    return std::filesystem::temp_directory_path() / "dreamrender";
+    if(auto path = env_path("HOME"); !path.empty()) {
+        return path / ".cache" / "dreamrender";
+    }
 #endif
+    return std::filesystem::temp_directory_path() / "dreamrender";
 }
 
 export class window
@@ -1021,10 +1047,12 @@ export class window
             allocator_info.setPVulkanFunctions(&functs);
             allocator = vma::createAllocator(allocator_info);
 
+            // Upload command buffers publish resources for shader and vertex reads, so keep
+            // them on the graphics family until cross-family ownership transfers are added.
             loader = std::make_unique<resource_loader>(device.get(), allocator,
-                queueFamilyIndices.transferFamily.value_or(queueFamilyIndices.graphicsFamily.value()),
                 queueFamilyIndices.graphicsFamily.value(),
-                transferQueues);
+                queueFamilyIndices.graphicsFamily.value(),
+                std::vector<vk::Queue>{graphicsQueue});
 
             if(config.headless || config.workaround_no_swapchain) {
                 swapchainFormat = vk::SurfaceFormatKHR{
