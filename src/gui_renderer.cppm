@@ -164,6 +164,7 @@ export class gui_renderer {
         void draw_image_glass(const texture& texture, float x, float y, float scaleX = 1.0f, float scaleY = 1.0f,
             glm::vec4 color = glm::vec4(1.0, 1.0, 1.0, 1.0))
         {
+            if(!texture.loaded) return;
             apply_view();
             image_renderer->renderImageGlass(commandBuffer, frame, renderPass, texture.imageView.get(), x, y, scaleX, scaleY, color*this->color);
         }
@@ -189,6 +190,18 @@ export class gui_renderer {
         void draw_generic(std::ranges::range auto vertices, simple_renderer::params p = {})
             requires(std::same_as<std::ranges::range_value_t<decltype(vertices)>, simple_renderer::vertex_data>)
         {
+            // The overwhelmingly common steady-state path has an identity
+            // colour stack. Forward that range directly so fixed-size UI
+            // geometry (clock rings, hands, focus marks) does not allocate a
+            // temporary vector on every draw. Preserve the copy-and-modulate
+            // path only while an inherited colour/fade is active.
+            if(color.r == 1.0F && color.g == 1.0F &&
+               color.b == 1.0F && color.a == 1.0F) {
+                apply_view();
+                simple_renderer->renderGeneric(
+                    commandBuffer, frame, renderPass, vertices, p);
+                return;
+            }
             std::vector<simple_renderer::vertex_data> vertices_vector(vertices.begin(), vertices.end());
             for(auto& v : vertices_vector) {
                 v.color *= color;

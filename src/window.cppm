@@ -206,7 +206,13 @@ export class window
 
             std::scoped_lock lock(renderLock);
 
+            // Stop upload workers while renderer-owned destinations are still
+            // alive. This also guarantees no further queue submissions before
+            // the device-idle wait and allocator teardown below.
+            loader.reset();
+
             if(device) {
+                std::scoped_lock queueGuard(queueLock);
                 try {
                     device->waitIdle();
                 } catch(const std::exception& e) {
@@ -234,7 +240,6 @@ export class window
                 }
             }
             current_renderer.reset();
-            loader.reset();
 
             headlessTextures.clear();
             headlessOutputBuffers.clear();
@@ -400,7 +405,7 @@ export class window
                     afterLimiter = now;
                 }
 
-                std::scoped_lock lock(renderLock);
+                std::scoped_lock lock(renderLock, queueLock);
                 r = device->waitForFences(inFlightFences[currentFrame], true, UINT64_MAX);
                 if(r != vk::Result::eSuccess)
                     spdlog::error("Waiting for inFlightFences[{}] failed with result {}", currentFrame, vk::to_string(r));
@@ -575,6 +580,7 @@ export class window
 
         void recreateSwapchain(bool recreate = true) {
             std::scoped_lock lock(renderLock);
+            std::scoped_lock queueGuard(queueLock);
             spdlog::debug("(Re)Creating swapchain");
 
             if(config.headless || config.workaround_no_swapchain) {
@@ -658,6 +664,7 @@ export class window
             auto tPrepare = std::chrono::high_resolution_clock::now();
             spdlog::debug("Preparing phase: waitLoad");
             current_renderer->waitLoad(); // replace with loading screen
+            loader->waitIdle();
             auto tWaitLoad = std::chrono::high_resolution_clock::now();
             spdlog::debug("Preparing phase: init");
             current_renderer->init();
@@ -744,6 +751,7 @@ export class window
         bool audioInitialized = false;
         bool allocatorInitialized = false;
         std::recursive_mutex renderLock{};
+        std::recursive_mutex queueLock{};
 
         struct sdl_controller_closer {
             void operator()(sdl::GameController* ptr) const {
@@ -1146,7 +1154,7 @@ export class window
             loader = std::make_unique<resource_loader>(device.get(), allocator,
                 queueFamilyIndices.graphicsFamily.value(),
                 queueFamilyIndices.graphicsFamily.value(),
-                std::vector<vk::Queue>{graphicsQueue});
+                std::vector<vk::Queue>{graphicsQueue}, queueLock);
 
             if(config.headless || config.workaround_no_swapchain) {
                 swapchainFormat = vk::SurfaceFormatKHR{

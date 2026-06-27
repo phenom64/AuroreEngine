@@ -28,6 +28,9 @@ option(DREAMS_BUILD_EXAMPLES "Build examples" OFF)
 option(DREAMS_BUILD_WITH_POSIX_THREADS "Build with POSIX threads" OFF)
 option(DREAMS_ALIAS_MODULES "CMake: Alias C++ module libraries" ON)
 option(DREAMS_FIND_PACKAGES "CMake: Find packages (if you disable this, you need to provide them)" ON)
+option(DREAMS_BUILD_V2_TESTS "Build backend-neutral Aurore v2 contract tests" ${PROJECT_IS_TOP_LEVEL})
+option(DREAMS_STABLE_CLANG_MODULE_OPTIMIZATION
+  "Use the stable optimization tier for Clang C++ modules on Windows" ON)
 
 if(DREAMS_BUILD_WITH_POSIX_THREADS AND NOT WIN32)
   add_compile_options(-pthread)
@@ -83,6 +86,11 @@ FetchContent_MakeAvailable(spdlog)
 add_subdirectory(third_party)
 add_subdirectory(shaders)
 add_subdirectory(src)
+
+if(DREAMS_BUILD_V2_TESTS)
+  enable_testing()
+  add_subdirectory(tests)
+endif()
 
 if(DREAMS_BUILD_EXAMPLES)
   add_subdirectory(examples)

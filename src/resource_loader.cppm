@@ -83,7 +83,8 @@ export class resource_loader
     public:
         resource_loader(vk::Device device, vma::Allocator allocator,
             uint32_t transferFamily, uint32_t graphicsFamily,
-            std::vector<vk::Queue> queues) : device(device), allocator(allocator), transferFamily(transferFamily), graphicsFamily(graphicsFamily)
+            std::vector<vk::Queue> queues,
+            std::recursive_mutex& queueLock) : device(device), allocator(allocator), transferFamily(transferFamily), graphicsFamily(graphicsFamily), queueLock(queueLock)
         {
             int index = 0;
             for(auto& queue : queues)
@@ -97,13 +98,35 @@ export class resource_loader
             {
                 std::scoped_lock<std::mutex> l(lock);
                 quit = true;
+                while(!tasks.empty()) {
+                    auto task = std::move(tasks.front());
+                    tasks.pop();
+                    task.state->store(loading_state::loaded,
+                                      std::memory_order_release);
+                    task.state->notify_all();
+                    try {
+                        task.promise.set_exception(std::make_exception_ptr(
+                            std::runtime_error(
+                                "Resource load cancelled during shutdown: " +
+                                task.source_name())));
+                    } catch(...) {
+                    }
+                }
             }
             cv.notify_all();
+            idleCv.notify_all();
             for(auto& t : threads) {
                 if(t.joinable()) {
                     t.join();
                 }
             }
+        }
+
+        void waitIdle() {
+            std::unique_lock<std::mutex> l(lock);
+            idleCv.wait(l, [this] {
+                return quit || (tasks.empty() && activeTasks == 0);
+            });
         }
 
         std::future<void> loadTexture(texture* texture, std::filesystem::path path) {
@@ -198,9 +221,12 @@ export class resource_loader
         uint32_t graphicsFamily;
 
         std::mutex lock;
+        std::recursive_mutex& queueLock;
         std::vector<std::thread> threads;
         std::queue<LoadTask> tasks;
         std::condition_variable cv;
+        std::condition_variable idleCv;
+        std::size_t activeTasks{};
         bool quit = false;
 
         void loadThread(int index, vk::Queue queue) {
@@ -238,12 +264,17 @@ export class resource_loader
                 {
                     auto task = std::move(tasks.front());
                     tasks.pop();
+                    ++activeTasks;
                     l.unlock();
 
                     if(task.state->load() != loading_state::queued) {
                         spdlog::debug("[Resource Loader {}] Task {} is already destroyed", index, task.source_name());
                         task.promise.set_value();
                         l.lock();
+                        --activeTasks;
+                        if(tasks.empty() && activeTasks == 0) {
+                            idleCv.notify_all();
+                        }
                         continue;
                     }
 
@@ -265,7 +296,13 @@ export class resource_loader
                             std::array<vk::SubmitInfo, 1> submits = {
                                 vk::SubmitInfo({}, {}, commandBuffer.get(), {})
                             };
-                            queue.submit(submits, fence.get());
+                            {
+                                // VkQueue is externally synchronized. The render
+                                // loop and all loader workers sharing this queue
+                                // serialize submission through the queue lock.
+                                std::scoped_lock queueGuard(queueLock);
+                                queue.submit(submits, fence.get());
+                            }
                             vk::Result result = device.waitForFences(fence.get(), true, UINT64_MAX);
                             if(result != vk::Result::eSuccess)
                             {
@@ -318,6 +355,10 @@ export class resource_loader
                     }
 
                     l.lock();
+                    --activeTasks;
+                    if(tasks.empty() && activeTasks == 0) {
+                        idleCv.notify_all();
+                    }
                 }
             } while(!quit);
 

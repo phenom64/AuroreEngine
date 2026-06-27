@@ -41,6 +41,32 @@ import vma;
 
 namespace dreamrender {
 
+#ifdef DREAMRENDER_USE_HARFBUZZ
+namespace {
+
+// The current atlas is pre-populated by Unicode character coverage, while
+// HarfBuzz returns font-specific glyph IDs. Standard/contextual ligatures can
+// therefore produce an otherwise valid glyph ID that is not resident yet;
+// silently skipping it removed sequences such as "ff" from visible text.
+// Keep kerning and script shaping, but retain character-addressable glyphs
+// until the asynchronous atlas service can stage arbitrary shaped IDs before
+// a render pass begins. Required-script ligatures (`rlig`) remain enabled.
+constexpr std::array kCharacterAddressableFeatures{
+    hb_feature_t{HB_TAG('l', 'i', 'g', 'a'), 0, HB_FEATURE_GLOBAL_START,
+                 HB_FEATURE_GLOBAL_END},
+    hb_feature_t{HB_TAG('c', 'l', 'i', 'g'), 0, HB_FEATURE_GLOBAL_START,
+                 HB_FEATURE_GLOBAL_END},
+};
+
+void shape_character_addressable(hb_font_t* font, hb_buffer_t* buffer)
+{
+    hb_shape(font, buffer, kCharacterAddressableFeatures.data(),
+             static_cast<unsigned int>(kCharacterAddressableFeatures.size()));
+}
+
+} // namespace
+#endif
+
 struct ft_library_wrapper {
     FT_Library lib{};
     ft_library_wrapper() {
@@ -112,7 +138,7 @@ export class font_renderer {
             hb_buffer_set_script(hbBuffer.get(), HB_SCRIPT_COMMON);
             hb_buffer_set_language(hbBuffer.get(), hb_language_from_string("en", -1));
             hb_buffer_add_utf8(hbBuffer.get(), text.data(), text.size(), 0, text.size());
-            hb_shape(hbFont.get(), hbBuffer.get(), nullptr, 0);
+            shape_character_addressable(hbFont.get(), hbBuffer.get());
 
             unsigned int gn = 0;
             auto* infos = hb_buffer_get_glyph_infos(hbBuffer.get(), &gn);
@@ -529,7 +555,7 @@ export class font_renderer {
                     hb_buffer_set_script(hbBuffer.get(), HB_SCRIPT_COMMON);
                     hb_buffer_set_language(hbBuffer.get(), hb_language_from_string("en", -1));
                     hb_buffer_add_utf8(hbBuffer.get(), text.data(), text.size(), 0, text.size());
-                    hb_shape(hbFont.get(), hbBuffer.get(), nullptr, 0);
+                    shape_character_addressable(hbFont.get(), hbBuffer.get());
                     unsigned int gn = 0;
                     auto* infos = hb_buffer_get_glyph_infos(hbBuffer.get(), &gn);
                     auto* pos = hb_buffer_get_glyph_positions(hbBuffer.get(), &gn);
@@ -664,7 +690,7 @@ export class font_renderer {
                 hb_buffer_set_script(hbBuffer.get(), HB_SCRIPT_COMMON);
                 hb_buffer_set_language(hbBuffer.get(), hb_language_from_string("en", -1));
                 hb_buffer_add_utf8(hbBuffer.get(), text.data(), text.size(), 0, text.size());
-                hb_shape(hbFont.get(), hbBuffer.get(), nullptr, 0);
+                shape_character_addressable(hbFont.get(), hbBuffer.get());
                 unsigned int gn = 0;
                 auto* pos = hb_buffer_get_glyph_positions(hbBuffer.get(), &gn);
                 for(unsigned int i=0; i<gn; ++i) {

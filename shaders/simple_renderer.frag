@@ -19,12 +19,24 @@ layout(push_constant) uniform RenderParams
 	float aspect_ratio;
 } params;
 
+float edge_factor(vec2 interval, float coordinate)
+{
+	// A zero interval is the renderer's documented/default "no blur" value.
+	// GLSL leaves smoothstep(edge, edge, x) undefined, which caused generic
+	// triangle geometry (clock hands, rings, focus marks) to disappear on some
+	// drivers while rectangles happened to survive on others.
+	if(abs(interval.y - interval.x) < 0.000001) {
+		return 1.0;
+	}
+	return smoothstep(interval.x, interval.y, coordinate);
+}
+
 void main()
 {
-	float xp = smoothstep(params.blur[0][0], params.blur[0][1], inTexCoord.x);
-	float xn = smoothstep(params.blur[1][0], params.blur[1][1], 1.0 - inTexCoord.x);
-	float yp = smoothstep(params.blur[2][0], params.blur[2][1], inTexCoord.y);
-	float yn = smoothstep(params.blur[3][0], params.blur[3][1], 1.0 - inTexCoord.y);
+	float xp = edge_factor(params.blur[0], inTexCoord.x);
+	float xn = edge_factor(params.blur[1], 1.0 - inTexCoord.x);
+	float yp = edge_factor(params.blur[2], inTexCoord.y);
+	float yn = edge_factor(params.blur[3], 1.0 - inTexCoord.y);
 	float f1 = xp * xn * yp * yn;
 
 	float f2 = 1.0;

@@ -144,6 +144,13 @@ export class image_renderer {
         }
 
         void prepare(int frameCount) {
+            descriptorSets.clear();
+            descriptorSetsCompat.clear();
+            descriptorSetIndicesCompat.clear();
+            imageInfos.clear();
+            glassDescriptorSets.clear();
+            glassDescriptorSetIndices.clear();
+
             std::array<vk::DescriptorPoolSize, 1> sizes = {
                 vk::DescriptorPoolSize(vk::DescriptorType::eCombinedImageSampler, 1*frameCount*max_images)
             };
@@ -167,12 +174,18 @@ export class image_renderer {
 
             // Allocate per-frame glass descriptor sets if glass pipeline is present
             if(glassDescriptorLayout && pipelineLayoutGlass) {
+                const auto descriptorCount = static_cast<uint32_t>(frameCount) * max_images;
                 std::array<vk::DescriptorPoolSize,1> sizes = {
-                    vk::DescriptorPoolSize(vk::DescriptorType::eCombinedImageSampler, static_cast<uint32_t>(frameCount))
+                    vk::DescriptorPoolSize(vk::DescriptorType::eCombinedImageSampler, descriptorCount)
                 };
-                glassDescriptorPool = device.createDescriptorPoolUnique(vk::DescriptorPoolCreateInfo({}, frameCount, sizes));
-                std::vector<vk::DescriptorSetLayout> glLayouts(frameCount, glassDescriptorLayout.get());
-                glassDescriptorSets = device.allocateDescriptorSets(vk::DescriptorSetAllocateInfo(glassDescriptorPool.get(), glLayouts));
+                glassDescriptorPool = device.createDescriptorPoolUnique(
+                    vk::DescriptorPoolCreateInfo({}, descriptorCount, sizes));
+                std::vector<vk::DescriptorSetLayout> glLayouts(max_images, glassDescriptorLayout.get());
+                for(int i = 0; i < frameCount; ++i) {
+                    glassDescriptorSets.push_back(device.allocateDescriptorSets(
+                        vk::DescriptorSetAllocateInfo(glassDescriptorPool.get(), glLayouts)));
+                    glassDescriptorSetIndices.push_back(0);
+                }
             }
         }
 
@@ -180,24 +193,28 @@ export class image_renderer {
             if(frame < 0) {
                 return;
             }
+            const auto frameIndex = static_cast<std::size_t>(frame);
+            if(frameIndex < glassDescriptorSetIndices.size()) {
+                glassDescriptorSetIndices[frameIndex] = 0;
+            }
             if(compat_mode) {
-                if(static_cast<std::size_t>(frame) >= descriptorSetIndicesCompat.size()) {
+                if(frameIndex >= descriptorSetIndicesCompat.size()) {
                     return;
                 }
-                descriptorSetIndicesCompat[frame] = 0;
+                descriptorSetIndicesCompat[frameIndex] = 0;
                 return;
             }
 
-            if(static_cast<std::size_t>(frame) >= imageInfos.size()) {
+            if(frameIndex >= imageInfos.size()) {
                 return;
             }
-            if(imageInfos[frame].empty())
+            if(imageInfos[frameIndex].empty())
                 return;
             vk::WriteDescriptorSet write(
-                descriptorSets[frame], 0, 0,
-                imageInfos[frame].size(), vk::DescriptorType::eCombinedImageSampler, imageInfos[frame].data());
+                descriptorSets[frameIndex], 0, 0,
+                imageInfos[frameIndex].size(), vk::DescriptorType::eCombinedImageSampler, imageInfos[frameIndex].data());
             device.updateDescriptorSets(write, {});
-            imageInfos[frame].clear();
+            imageInfos[frameIndex].clear();
         }
 
         // Glass icon variant: single icon sampler + special fragment
@@ -205,13 +222,21 @@ export class image_renderer {
                               float x, float y, float scaleX, float scaleY, glm::vec4 color = glm::vec4(1.0,1.0,1.0,1.0))
         {
             if(!iconView) return;
-            if(frame < 0 || static_cast<std::size_t>(frame) >= glassDescriptorSets.size()) return;
+            if(frame < 0) return;
+            const auto frameIndex = static_cast<std::size_t>(frame);
+            if(frameIndex >= glassDescriptorSets.size() || frameIndex >= glassDescriptorSetIndices.size()) return;
+            auto& frameSets = glassDescriptorSets[frameIndex];
+            auto& nextSet = glassDescriptorSetIndices[frameIndex];
+            if(nextSet >= frameSets.size()) return;
+            const auto descriptorSet = frameSets[nextSet++];
             vk::DescriptorImageInfo img(sampler.get(), iconView, vk::ImageLayout::eShaderReadOnlyOptimal);
-            vk::WriteDescriptorSet write(glassDescriptorSets[frame], 0, 0, 1, vk::DescriptorType::eCombinedImageSampler, &img);
+            vk::WriteDescriptorSet write(descriptorSet, 0, 0, 1, vk::DescriptorType::eCombinedImageSampler, &img);
             device.updateDescriptorSets(write, {});
 
-            cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, pipelinesGlass[renderPass].get());
-            cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, pipelineLayoutGlass.get(), 0, glassDescriptorSets[frame], {});
+            const auto pipeline = pipelinesGlass.find(renderPass);
+            if(pipeline == pipelinesGlass.end() || !pipeline->second) return;
+            cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline->second.get());
+            cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, pipelineLayoutGlass.get(), 0, descriptorSet, {});
 
             glm::vec2 pos = glm::vec2(x, y)*2.0f - glm::vec2(1.0f);
             push_constants push{};
@@ -352,7 +377,8 @@ export class image_renderer {
         vk::UniquePipelineLayout pipelineLayoutGlass;
         UniquePipelineMap pipelinesGlass;
         vk::UniqueDescriptorPool glassDescriptorPool;
-        std::vector<vk::DescriptorSet> glassDescriptorSets;
+        std::vector<std::vector<vk::DescriptorSet>> glassDescriptorSets;
+        std::vector<unsigned int> glassDescriptorSetIndices;
 
         std::vector<
             std::vector<vk::DescriptorImageInfo>

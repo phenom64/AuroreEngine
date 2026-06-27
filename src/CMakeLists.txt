@@ -26,7 +26,29 @@ set(MODULE_SOURCES
   components/simple_renderer.cppm
 )
 
+# The v2 substrate deliberately remains an ordinary, backend-neutral C++
+# library. It can be consumed and tested without Vulkan, SDL, modules, or
+# generated shaders while the existing renderer is migrated incrementally.
+add_library(aurore_core_v2 STATIC
+  v2/core/time.cpp
+)
+add_library(Aurore::Core ALIAS aurore_core_v2)
+target_compile_features(aurore_core_v2 PUBLIC cxx_std_23)
+target_include_directories(aurore_core_v2
+  PUBLIC
+    $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>
+)
+set_target_properties(aurore_core_v2 PROPERTIES CXX_SCAN_FOR_MODULES OFF)
+
 add_library(dreamrender ${SOURCES})
+if(WIN32 AND CMAKE_CXX_COMPILER_ID MATCHES "Clang" AND
+   DREAMS_STABLE_CLANG_MODULE_OPTIMIZATION)
+  # Clang 22's Windows frontend intermittently crashes in the O3 inliner on
+  # standard-library-heavy module interface units. The final application still
+  # optimizes its consumers; keep engine BMI/object generation deterministic.
+  target_compile_options(dreamrender PRIVATE $<$<CONFIG:Release>:-O0>)
+endif()
 target_sources(dreamrender PUBLIC
   FILE_SET CXX_MODULES
   BASE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}
