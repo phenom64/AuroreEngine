@@ -135,9 +135,26 @@ export class image_renderer {
                     vk::PipelineShaderStageCreateInfo({}, vk::ShaderStageFlagBits::eVertex, vertexShader.get(), "main"),
                     vk::PipelineShaderStageCreateInfo({}, vk::ShaderStageFlagBits::eFragment, glassFrag.get(), "main")
                 };
+                // The glass fragment shader outputs premultiplied colour,
+                // matching xmb-web's icon canvas blendFunc(ONE,
+                // ONE_MINUS_SRC_ALPHA).  Keep the normal image pipeline
+                // straight-alpha; only the glass variant uses premultiplied
+                // blending so translucent icons reveal the live background.
+                vk::PipelineColorBlendAttachmentState glassAttachment(
+                    true, vk::BlendFactor::eOne,
+                    vk::BlendFactor::eOneMinusSrcAlpha, vk::BlendOp::eAdd,
+                    vk::BlendFactor::eOne,
+                    vk::BlendFactor::eOneMinusSrcAlpha, vk::BlendOp::eAdd,
+                    vk::ColorComponentFlagBits::eR |
+                        vk::ColorComponentFlagBits::eG |
+                        vk::ColorComponentFlagBits::eB |
+                        vk::ColorComponentFlagBits::eA);
+                vk::PipelineColorBlendStateCreateInfo glassColorBlend(
+                    {}, false, vk::LogicOp::eClear, glassAttachment);
+
                 vk::GraphicsPipelineCreateInfo ginfo({},
                     glassStages, &vertex_input, &input_assembly, &tesselation, &viewport,
-                    &rasterization, &multisample, &depthStencil, &colorBlend, &dynamic,
+                    &rasterization, &multisample, &depthStencil, &glassColorBlend, &dynamic,
                     pipelineLayoutGlass.get(), renderPasses[0], 0, {}, {});
                 pipelinesGlass = createPipelines(device, pipelineCache, ginfo, renderPasses, "Image Renderer Glass Pipeline");
             }
