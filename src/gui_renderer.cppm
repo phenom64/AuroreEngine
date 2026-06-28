@@ -160,9 +160,9 @@ export class gui_renderer {
             apply_view();
             image_renderer->renderImage(commandBuffer, frame, renderPass, texture, x, y, scaleX, scaleY, color*this->color);
         }
-        // xmb-web-inspired translucent glass pass for icons. The shader is
-        // self-contained at this renderer layer, but uses premultiplied
-        // blending so the scene behind the icon visibly shows through.
+        // xmb-web-inspired translucent glass pass for icons. The texture passed
+        // here should be the imported icon normal map when available; the
+        // engine glass shader samples the live shell background for refraction.
         void draw_image_glass(const texture& texture, float x, float y, float scaleX = 1.0f, float scaleY = 1.0f,
             glm::vec4 color = glm::vec4(1.0, 1.0, 1.0, 1.0))
         {

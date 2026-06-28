@@ -118,9 +118,11 @@ export class image_renderer {
                     pipelineLayout.get(), renderPasses[0], 0, {}, {});
                 pipelines = createPipelines(device, pipelineCache, info, renderPasses, "Image Renderer Pipeline");
 
-                // Glass pipeline: simple descriptor set with one sampler and alternate fragment shader
-                std::array<vk::DescriptorSetLayoutBinding,1> glassBindings = {
-                    vk::DescriptorSetLayoutBinding(0, vk::DescriptorType::eCombinedImageSampler, 1, vk::ShaderStageFlagBits::eFragment)
+                // Glass pipeline: normal-map sampler + live background sampler,
+                // matching xmb-web's normal-map icon material/refraction path.
+                std::array<vk::DescriptorSetLayoutBinding,2> glassBindings = {
+                    vk::DescriptorSetLayoutBinding(0, vk::DescriptorType::eCombinedImageSampler, 1, vk::ShaderStageFlagBits::eFragment),
+                    vk::DescriptorSetLayoutBinding(1, vk::DescriptorType::eCombinedImageSampler, 1, vk::ShaderStageFlagBits::eFragment)
                 };
                 glassDescriptorLayout = device.createDescriptorSetLayoutUnique(
                     vk::DescriptorSetLayoutCreateInfo({}, glassBindings));
@@ -193,7 +195,7 @@ export class image_renderer {
             if(glassDescriptorLayout && pipelineLayoutGlass) {
                 const auto descriptorCount = static_cast<uint32_t>(frameCount) * max_images;
                 std::array<vk::DescriptorPoolSize,1> sizes = {
-                    vk::DescriptorPoolSize(vk::DescriptorType::eCombinedImageSampler, descriptorCount)
+                    vk::DescriptorPoolSize(vk::DescriptorType::eCombinedImageSampler, descriptorCount * 2)
                 };
                 glassDescriptorPool = device.createDescriptorPoolUnique(
                     vk::DescriptorPoolCreateInfo({}, descriptorCount, sizes));
@@ -234,7 +236,11 @@ export class image_renderer {
             imageInfos[frameIndex].clear();
         }
 
-        // Glass icon variant: single icon sampler + special fragment
+        void setGlassBackground(vk::ImageView view) {
+            glassBackgroundView = view;
+        }
+
+        // Glass icon variant: imported xmb-web normal map + live background.
         void renderImageGlass(vk::CommandBuffer cmd, int frame, vk::RenderPass renderPass, vk::ImageView iconView,
                               float x, float y, float scaleX, float scaleY, glm::vec4 color = glm::vec4(1.0,1.0,1.0,1.0))
         {
@@ -246,9 +252,16 @@ export class image_renderer {
             auto& nextSet = glassDescriptorSetIndices[frameIndex];
             if(nextSet >= frameSets.size()) return;
             const auto descriptorSet = frameSets[nextSet++];
-            vk::DescriptorImageInfo img(sampler.get(), iconView, vk::ImageLayout::eShaderReadOnlyOptimal);
-            vk::WriteDescriptorSet write(descriptorSet, 0, 0, 1, vk::DescriptorType::eCombinedImageSampler, &img);
-            device.updateDescriptorSets(write, {});
+            const auto backgroundView = glassBackgroundView ? glassBackgroundView : iconView;
+            std::array<vk::DescriptorImageInfo, 2> images = {
+                vk::DescriptorImageInfo(sampler.get(), iconView, vk::ImageLayout::eShaderReadOnlyOptimal),
+                vk::DescriptorImageInfo(sampler.get(), backgroundView, vk::ImageLayout::eShaderReadOnlyOptimal)
+            };
+            std::array<vk::WriteDescriptorSet, 2> writes = {
+                vk::WriteDescriptorSet(descriptorSet, 0, 0, 1, vk::DescriptorType::eCombinedImageSampler, &images[0]),
+                vk::WriteDescriptorSet(descriptorSet, 1, 0, 1, vk::DescriptorType::eCombinedImageSampler, &images[1])
+            };
+            device.updateDescriptorSets(writes, {});
 
             const auto pipeline = pipelinesGlass.find(renderPass);
             if(pipeline == pipelinesGlass.end() || !pipeline->second) return;
@@ -396,6 +409,7 @@ export class image_renderer {
         vk::UniqueDescriptorPool glassDescriptorPool;
         std::vector<std::vector<vk::DescriptorSet>> glassDescriptorSets;
         std::vector<unsigned int> glassDescriptorSetIndices;
+        vk::ImageView glassBackgroundView{};
 
         std::vector<
             std::vector<vk::DescriptorImageInfo>
