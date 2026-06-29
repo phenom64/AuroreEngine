@@ -9,7 +9,9 @@ layout(push_constant) uniform PushConsts {
 } pc;
 
 layout(set = 0, binding = 0) uniform sampler2D uNormalMap;
-layout(set = 0, binding = 1) uniform sampler2D uBackgroundMap;
+layout(set = 0, binding = 1) uniform sampler2D uAmbMap;
+layout(set = 0, binding = 2) uniform sampler2D uEnvMap;
+layout(set = 0, binding = 3) uniform sampler2D uBackgroundMap;
 
 layout(location = 0) in vec2 vUV;
 
@@ -58,28 +60,31 @@ vec4 glassIcon(vec2 uv) {
     vec2 iconUVScale = vec2(
         abs(dUvDx.x) > 0.000001 ? abs(pixelUV.x / dUvDx.x) : pixelUV.x,
         abs(dUvDy.y) > 0.000001 ? abs(pixelUV.y / dUvDy.y) : pixelUV.y);
-    vec2 refr_dir = nxy * 12.0 * iconUVScale;
+    vec2 refr_dir = nxy * 10.0 * iconUVScale;
     vec3 chroma = vec3(
-        texture(uBackgroundMap, clamp(screenUV + refr_dir * -0.096, vec2(0.0), vec2(1.0))).r,
-        texture(uBackgroundMap, clamp(screenUV + refr_dir * -0.114, vec2(0.0), vec2(1.0))).g,
-        texture(uBackgroundMap, clamp(screenUV + refr_dir * -0.144, vec2(0.0), vec2(1.0))).b);
+        texture(uBackgroundMap, clamp(screenUV + refr_dir * -0.032, vec2(0.0), vec2(1.0))).r,
+        texture(uBackgroundMap, clamp(screenUV + refr_dir * -0.038, vec2(0.0), vec2(1.0))).g,
+        texture(uBackgroundMap, clamp(screenUV + refr_dir * -0.048, vec2(0.0), vec2(1.0))).b);
 
-    vec3 ambient = vec3(0.74, 0.80, 0.90) * (0.5 + 0.5 * clamp(N.y * 0.5 + 0.5, 0.0, 1.0));
-    vec3 env = vec3(0.82, 0.90, 1.0) *
-        (0.22 + 0.60 * pow(clamp(N.z * 0.65 + N.y * 0.35, 0.0, 1.0), 1.6));
-    float shadow = (1.0 - max(dot(N, light1), 0.0)) * 0.30;
+    float ambUVy = clamp(N.y * 0.5 + 0.5, 0.0, 1.0);
+    vec3 ambSample = texture(uAmbMap, vec2(0.5, ambUVy)).rgb;
+    vec3 ambient = vec3(0.74, 0.80, 0.90) * (0.5 + 0.5 * ambSample);
 
-    vec3 lit = chroma * 0.35
-             + ambient * 0.55
-             + env * 2.0 * 0.60
-             + vec3(spec1 + spec2) * 1.80
-             + vec3(fresnel) * 0.75
-             - vec3(0.00, 0.02, 0.05) * shadow;
+    vec2 envUV = N.xy * 0.5 + 0.5;
+    vec3 env = texture(uEnvMap, envUV).rgb * 0.74;
+    float shadowFactor = (1.0 - max(dot(N, light1), 0.0)) * 0.30;
+    vec3 highlights = ambient * 0.42
+                    + env * 2.0 * 0.42
+                    + vec3(spec1 + spec2) * 0.95
+                    + vec3(fresnel) * 0.38
+                    - vec3(0.0, 0.02, 0.05) * shadowFactor;
+
+    vec3 lit = chroma * 0.35 + highlights;
     vec3 surface = vec3(1.0) - exp(-max(lit, vec3(0.0)) * 0.95);
-    surface *= 1.08 * pc.color.rgb;
+    surface *= 0.70 * pc.color.rgb;
 
-    float glass_alpha = nm.a * (0.55 + 0.40 * fresnel) * pc.color.a;
-    glass_alpha = clamp(glass_alpha, 0.0, 0.96);
+    float glass_alpha = nm.a * (0.30 + 0.26 * fresnel) * pc.color.a;
+    glass_alpha = clamp(glass_alpha, 0.0, 0.60);
     return vec4(surface * glass_alpha, glass_alpha);
 }
 

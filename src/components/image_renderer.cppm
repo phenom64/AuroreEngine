@@ -118,11 +118,13 @@ export class image_renderer {
                     pipelineLayout.get(), renderPasses[0], 0, {}, {});
                 pipelines = createPipelines(device, pipelineCache, info, renderPasses, "Image Renderer Pipeline");
 
-                // Glass pipeline: normal-map sampler + live background sampler,
-                // matching xmb-web's normal-map icon material/refraction path.
-                std::array<vk::DescriptorSetLayoutBinding,2> glassBindings = {
+                // Glass pipeline: normal, ambient ramp, environment matcap,
+                // and live background samplers, matching xmb-web's icon pass.
+                std::array<vk::DescriptorSetLayoutBinding,4> glassBindings = {
                     vk::DescriptorSetLayoutBinding(0, vk::DescriptorType::eCombinedImageSampler, 1, vk::ShaderStageFlagBits::eFragment),
-                    vk::DescriptorSetLayoutBinding(1, vk::DescriptorType::eCombinedImageSampler, 1, vk::ShaderStageFlagBits::eFragment)
+                    vk::DescriptorSetLayoutBinding(1, vk::DescriptorType::eCombinedImageSampler, 1, vk::ShaderStageFlagBits::eFragment),
+                    vk::DescriptorSetLayoutBinding(2, vk::DescriptorType::eCombinedImageSampler, 1, vk::ShaderStageFlagBits::eFragment),
+                    vk::DescriptorSetLayoutBinding(3, vk::DescriptorType::eCombinedImageSampler, 1, vk::ShaderStageFlagBits::eFragment)
                 };
                 glassDescriptorLayout = device.createDescriptorSetLayoutUnique(
                     vk::DescriptorSetLayoutCreateInfo({}, glassBindings));
@@ -195,7 +197,7 @@ export class image_renderer {
             if(glassDescriptorLayout && pipelineLayoutGlass) {
                 const auto descriptorCount = static_cast<uint32_t>(frameCount) * max_images;
                 std::array<vk::DescriptorPoolSize,1> sizes = {
-                    vk::DescriptorPoolSize(vk::DescriptorType::eCombinedImageSampler, descriptorCount * 2)
+                    vk::DescriptorPoolSize(vk::DescriptorType::eCombinedImageSampler, descriptorCount * 4)
                 };
                 glassDescriptorPool = device.createDescriptorPoolUnique(
                     vk::DescriptorPoolCreateInfo({}, descriptorCount, sizes));
@@ -240,6 +242,11 @@ export class image_renderer {
             glassBackgroundView = view;
         }
 
+        void setGlassMaterial(vk::ImageView ambientView, vk::ImageView environmentView) {
+            glassAmbientView = ambientView;
+            glassEnvironmentView = environmentView;
+        }
+
         // Glass icon variant: imported xmb-web normal map + live background.
         void renderImageGlass(vk::CommandBuffer cmd, int frame, vk::RenderPass renderPass, vk::ImageView iconView,
                               float x, float y, float scaleX, float scaleY, glm::vec4 color = glm::vec4(1.0,1.0,1.0,1.0))
@@ -252,14 +259,20 @@ export class image_renderer {
             auto& nextSet = glassDescriptorSetIndices[frameIndex];
             if(nextSet >= frameSets.size()) return;
             const auto descriptorSet = frameSets[nextSet++];
+            const auto ambientView = glassAmbientView ? glassAmbientView : iconView;
+            const auto environmentView = glassEnvironmentView ? glassEnvironmentView : iconView;
             const auto backgroundView = glassBackgroundView ? glassBackgroundView : iconView;
-            std::array<vk::DescriptorImageInfo, 2> images = {
+            std::array<vk::DescriptorImageInfo, 4> images = {
                 vk::DescriptorImageInfo(sampler.get(), iconView, vk::ImageLayout::eShaderReadOnlyOptimal),
+                vk::DescriptorImageInfo(sampler.get(), ambientView, vk::ImageLayout::eShaderReadOnlyOptimal),
+                vk::DescriptorImageInfo(sampler.get(), environmentView, vk::ImageLayout::eShaderReadOnlyOptimal),
                 vk::DescriptorImageInfo(sampler.get(), backgroundView, vk::ImageLayout::eShaderReadOnlyOptimal)
             };
-            std::array<vk::WriteDescriptorSet, 2> writes = {
+            std::array<vk::WriteDescriptorSet, 4> writes = {
                 vk::WriteDescriptorSet(descriptorSet, 0, 0, 1, vk::DescriptorType::eCombinedImageSampler, &images[0]),
-                vk::WriteDescriptorSet(descriptorSet, 1, 0, 1, vk::DescriptorType::eCombinedImageSampler, &images[1])
+                vk::WriteDescriptorSet(descriptorSet, 1, 0, 1, vk::DescriptorType::eCombinedImageSampler, &images[1]),
+                vk::WriteDescriptorSet(descriptorSet, 2, 0, 1, vk::DescriptorType::eCombinedImageSampler, &images[2]),
+                vk::WriteDescriptorSet(descriptorSet, 3, 0, 1, vk::DescriptorType::eCombinedImageSampler, &images[3])
             };
             device.updateDescriptorSets(writes, {});
 
@@ -409,6 +422,8 @@ export class image_renderer {
         vk::UniqueDescriptorPool glassDescriptorPool;
         std::vector<std::vector<vk::DescriptorSet>> glassDescriptorSets;
         std::vector<unsigned int> glassDescriptorSetIndices;
+        vk::ImageView glassAmbientView{};
+        vk::ImageView glassEnvironmentView{};
         vk::ImageView glassBackgroundView{};
 
         std::vector<
