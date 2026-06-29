@@ -21,11 +21,8 @@ vec3 safe_normalize(vec3 value, vec3 fallback)
     return len2 > 0.000001 ? value * inversesqrt(len2) : fallback;
 }
 
-// xmb-web/PS3-style icon glass material.  This path intentionally consumes the
-// imported xmb-web normal-map PNGs (normalmaps/nmap_###.png), not the flat icon
-// PNG fallback.  RGB supplies the icon normal and alpha is the silhouette mask.
-// The live rendered shell background is sampled behind the icon with chromatic
-// offsets so the background visibly bends through the translucent body.
+// xmb-web ICON_MATERIAL_DAY + FS_ICON_GLASS (~index.html:2727, :4331).
+// Normal-map RGBA from compat/xmb-ui-compat/normalmaps/nmap_###.png.
 vec4 glassIcon(vec2 uv) {
     vec4 nm = texture(uNormalMap, uv);
     if(nm.a < (1.0 / 255.0)) {
@@ -38,7 +35,6 @@ vec4 glassIcon(vec2 uv) {
     vec3 V = safe_normalize(vec3((uv - vec2(0.5)) * -0.30, 1.0),
                             vec3(0.0, 0.0, 1.0));
 
-    // Same day-theme light directions used by xmb-web's icon material.
     const vec3 light1 = normalize(vec3(-0.5358268, 0.3875156, 0.7500925));
     const vec3 light2 = normalize(vec3( 0.7071068, 0.8660254,-0.3535534));
     vec3 H1 = normalize(V + light1);
@@ -52,19 +48,17 @@ vec4 glassIcon(vec2 uv) {
     vec2 bgSize = vec2(textureSize(uBackgroundMap, 0));
     vec2 screenUV = clamp(gl_FragCoord.xy / max(bgSize, vec2(1.0)), vec2(0.0), vec2(1.0));
 
-    // Derive the icon's screen-UV footprint from derivatives so callers only
-    // need to draw a normal-map quad.  This mirrors xmb-web's uBgRadiusUV*2.
     vec2 dUvDx = dFdx(uv);
     vec2 dUvDy = dFdy(uv);
     vec2 pixelUV = 1.0 / max(bgSize, vec2(1.0));
     vec2 iconUVScale = vec2(
         abs(dUvDx.x) > 0.000001 ? abs(pixelUV.x / dUvDx.x) : pixelUV.x,
         abs(dUvDy.y) > 0.000001 ? abs(pixelUV.y / dUvDy.y) : pixelUV.y);
-    vec2 refr_dir = nxy * 10.0 * iconUVScale;
+    vec2 refr_dir = nxy * 12.0 * iconUVScale;
     vec3 chroma = vec3(
-        texture(uBackgroundMap, clamp(screenUV + refr_dir * -0.032, vec2(0.0), vec2(1.0))).r,
-        texture(uBackgroundMap, clamp(screenUV + refr_dir * -0.038, vec2(0.0), vec2(1.0))).g,
-        texture(uBackgroundMap, clamp(screenUV + refr_dir * -0.048, vec2(0.0), vec2(1.0))).b);
+        texture(uBackgroundMap, clamp(screenUV + refr_dir * -0.096, vec2(0.0), vec2(1.0))).r,
+        texture(uBackgroundMap, clamp(screenUV + refr_dir * -0.114, vec2(0.0), vec2(1.0))).g,
+        texture(uBackgroundMap, clamp(screenUV + refr_dir * -0.144, vec2(0.0), vec2(1.0))).b);
 
     float ambUVy = clamp(N.y * 0.5 + 0.5, 0.0, 1.0);
     vec3 ambSample = texture(uAmbMap, vec2(0.5, ambUVy)).rgb;
@@ -73,22 +67,21 @@ vec4 glassIcon(vec2 uv) {
     vec2 envUV = N.xy * 0.5 + 0.5;
     vec3 env = texture(uEnvMap, envUV).rgb * 0.74;
     float shadowFactor = (1.0 - max(dot(N, light1), 0.0)) * 0.30;
-    vec3 highlights = ambient * 0.42
-                    + env * 2.0 * 0.42
-                    + vec3(spec1 + spec2) * 0.95
-                    + vec3(fresnel) * 0.38
+    vec3 highlights = ambient * 0.55
+                    + env * 2.0 * 0.60
+                    + vec3(spec1 + spec2) * 1.80
+                    + vec3(fresnel) * 0.75
                     - vec3(0.0, 0.02, 0.05) * shadowFactor;
 
-    vec3 lit = chroma * 0.35 + highlights;
-    vec3 surface = vec3(1.0) - exp(-max(lit, vec3(0.0)) * 0.95);
-    surface *= 0.70 * pc.color.rgb;
+    vec3 totalColor = chroma * 0.35 + highlights;
+    vec3 surface = vec3(1.0) - exp(-max(totalColor, vec3(0.0)) * 0.95);
+    surface *= 1.08 * pc.color.rgb;
 
-    float glass_alpha = nm.a * (0.30 + 0.26 * fresnel) * pc.color.a;
-    glass_alpha = clamp(glass_alpha, 0.0, 0.60);
+    float fresAlpha = 0.55 + 0.40 * fresnel;
+    float glass_alpha = nm.a * fresAlpha * pc.color.a;
     return vec4(surface * glass_alpha, glass_alpha);
 }
 
 void main() {
     FragColor = glassIcon(vUV);
 }
-
