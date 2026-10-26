@@ -8,6 +8,14 @@ module;
 #include <vector>
 #include <array>
 #include <cstdint>
+#include <span>
+#include <atomic>
+#include <bit>
+#include <memory>
+#include <algorithm>
+#include <cmath>
+#include <cstddef>
+#include <stdexcept>
 
 export module dreamrender:components.image_renderer;
 
@@ -17,6 +25,7 @@ import :utils;
 
 import glm;
 import vulkan_hpp;
+import vma;
 
 namespace dreamrender {
 
@@ -36,6 +45,30 @@ export class image_renderer {
             return true;
         }
     public:
+        // Positions use normalized screen x/y, Vulkan depth z, and clip-space w.
+        // UVs and colours are perspective-correctly interpolated by the GPU.
+        struct textured_vertex {
+            glm::vec4 position;
+            glm::vec2 uv;
+            glm::vec4 color{1.0f};
+        };
+        struct geometry_statistics {
+            std::uint64_t draw_calls{},triangles{},bytes_uploaded{};
+            std::size_t resident_vertex_capacity{};
+        };
+        // Supply before drawing. Existing allocatorless clients retain the
+        // small, push-constant triangle fallback; full scenes use retained VMA
+        // vertex chunks and one draw per mesh in the usual single-chunk case.
+        void setAllocator(vma::Allocator allocator) {
+            if(allocator==meshAllocator) return;
+            for(const auto& arena:meshArenas) if(!arena.chunks.empty())
+                throw std::logic_error("Set the image renderer allocator before preparing mesh resources");
+            meshAllocator=allocator;
+        }
+        [[nodiscard]] geometry_statistics geometryStatistics(int frame) const {
+            if(frame<0 || static_cast<std::size_t>(frame)>=completedMeshStatistics.size()) return {};
+            return completedMeshStatistics[frame];
+        }
         constexpr static unsigned int default_max_images = 512;
 
         image_renderer(vk::Device device, vk::Extent2D frameSize, const gpu_features& features) : device(device), frameSize(frameSize),
@@ -162,9 +195,12 @@ export class image_renderer {
                     pipelineLayoutGlass.get(), renderPasses[0], 0, {}, {});
                 pipelinesGlass = createPipelines(device, pipelineCache, ginfo, renderPasses, "Image Renderer Glass Pipeline");
             }
+            buildTrianglePipelines(renderPasses,sampleCount,pipelineCache);
         }
 
         void prepare(int frameCount) {
+            meshArenas.clear();meshArenas.resize(frameCount);
+            completedMeshStatistics.assign(frameCount,{});
             descriptorSets.clear();
             descriptorSetsCompat.clear();
             descriptorSetIndicesCompat.clear();
@@ -191,6 +227,7 @@ export class image_renderer {
                 vk::DescriptorSetAllocateInfo set_info(descriptorPool.get(), layouts);
                 descriptorSets = device.allocateDescriptorSets(set_info);
                 imageInfos.resize(frameCount);
+                for(auto& frameImages:imageInfos) frameImages.reserve(max_images);
             }
 
             // Allocate per-frame glass descriptor sets if glass pipeline is present
@@ -215,6 +252,13 @@ export class image_renderer {
                 return;
             }
             const auto frameIndex = static_cast<std::size_t>(frame);
+            if(frameIndex<meshArenas.size()) {
+                auto& arena=meshArenas[frameIndex];
+                arena.statistics.resident_vertex_capacity=arena.allocated;
+                completedMeshStatistics[frameIndex]=arena.statistics;
+                arena.statistics={};arena.budget_reported=false;
+                for(auto& chunk:arena.chunks) chunk->used=0;
+            }
             if(frameIndex < glassDescriptorSetIndices.size()) {
                 glassDescriptorSetIndices[frameIndex] = 0;
             }
@@ -344,6 +388,65 @@ export class image_renderer {
             renderImage(cmd, frame, renderPass, texture.imageView.get(), x, y, scaleX, scaleY, color);
         }
 
+        // One descriptor is reserved for the entire mesh. Small triangle push
+        // constants avoid transient vertex allocations and preserve perspective
+        // interpolation without requiring a new allocator in this renderer API.
+        void renderTexturedTriangles(vk::CommandBuffer cmd,int frame,vk::RenderPass renderPass,
+            vk::ImageView view,std::span<const textured_vertex> vertices,
+            glm::vec4 tint=glm::vec4(1),bool additive=false,bool depth=false) {
+            if(!view || vertices.empty() || frame<0) return;
+            if(vertices.size()%3!=0) throw std::invalid_argument("Textured triangle vertex count must be divisible by three");
+            const auto pipelineIndex=(depth?2u:0u)+(additive?1u:0u);
+            const auto frameIndex=static_cast<std::size_t>(frame);
+            const bool batched=static_cast<bool>(meshAllocator) && frameIndex<meshArenas.size();
+            const auto& selectedPipelines=batched?batchedTrianglePipelines[pipelineIndex]:trianglePipelines[pipelineIndex];
+            const auto pipeline=selectedPipelines.find(renderPass);
+            if(pipeline==selectedPipelines.end() || !pipeline->second) return;
+            vk::DescriptorSet descriptorSet;
+            unsigned int imageIndex{};
+            vk::DescriptorImageInfo info(sampler.get(),view,vk::ImageLayout::eShaderReadOnlyOptimal);
+            if(compat_mode) {
+                if(frameIndex>=descriptorSetsCompat.size()) return;
+                auto& next=descriptorSetIndicesCompat[frameIndex];
+                if(next>=descriptorSetsCompat[frameIndex].size()) return;
+                descriptorSet=descriptorSetsCompat[frameIndex][next++];
+                device.updateDescriptorSets(vk::WriteDescriptorSet(descriptorSet,0,0,1,vk::DescriptorType::eCombinedImageSampler,&info),{});
+            } else {
+                if(frameIndex>=imageInfos.size() || imageInfos[frameIndex].size()>=max_images) return;
+                imageIndex=static_cast<unsigned int>(imageInfos[frameIndex].size());
+                imageInfos[frameIndex].push_back(info);descriptorSet=descriptorSets[frameIndex];
+            }
+            cmd.bindPipeline(vk::PipelineBindPoint::eGraphics,pipeline->second.get());
+            cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics,trianglePipelineLayout.get(),0,descriptorSet,{});
+            TrianglePush push{};push.index=imageIndex;
+            if(batched) {
+                // The batch vertex shader reads the arena, while the shared
+                // fragment shader needs only the texture index at offset120.
+                cmd.pushConstants(trianglePipelineLayout.get(),vk::ShaderStageFlagBits::eVertex|vk::ShaderStageFlagBits::eFragment,0,sizeof(push),&push);
+                renderMeshBatches(cmd,frame,vertices,tint);
+                return;
+            }
+            for(std::size_t first=0;first<vertices.size();first+=3) {
+                bool valid=true;
+                for(std::size_t i=0;i<3;++i) {
+                    const auto& vertex=vertices[first+i];
+                    for(int component=0;component<4;++component) valid=valid && std::isfinite(vertex.position[component]) && std::isfinite(vertex.color[component]);
+                    valid=valid && vertex.position.w>0 && std::isfinite(vertex.uv.x) && std::isfinite(vertex.uv.y);
+                    push.positions[i]=vertex.position;push.colors[i]=vertex.color*tint;push.uvs[i]=vertex.uv;
+                }
+                if(!valid) continue;
+                cmd.pushConstants(trianglePipelineLayout.get(),vk::ShaderStageFlagBits::eVertex|vk::ShaderStageFlagBits::eFragment,0,sizeof(push),&push);
+                cmd.draw(3,1,0,0);
+                if(frameIndex<meshArenas.size()) { ++meshArenas[frameIndex].statistics.draw_calls; ++meshArenas[frameIndex].statistics.triangles; }
+            }
+        }
+        void renderTexturedTriangles(vk::CommandBuffer cmd,int frame,vk::RenderPass pass,
+            const texture& image,std::span<const textured_vertex> vertices,
+            glm::vec4 tint=glm::vec4(1),bool additive=false,bool depth=false) {
+            if(!image.loaded.load(std::memory_order_acquire)) return;
+            renderTexturedTriangles(cmd,frame,pass,image.imageView.get(),vertices,tint,additive,depth);
+        }
+
         void renderImageSized(vk::CommandBuffer cmd, int frame, vk::RenderPass renderPass, vk::ImageView view, float x, float y, int width, int height, glm::vec4 color = glm::vec4(1.0, 1.0, 1.0, 1.0)) {
             if(!view)
                 return;
@@ -399,6 +502,128 @@ export class image_renderer {
             renderImageSized(cmd, frame, renderPass, texture.imageView.get(), x, y, width == -1 ? texture.width : width, height == -1 ? texture.height : height, color);
         }
     private:
+        struct TrianglePush {
+            std::array<glm::vec4,3> positions;
+            std::array<glm::vec4,3> colors;
+            std::array<glm::vec2,3> uvs;
+            std::uint32_t index;
+        };
+        static_assert(offsetof(TrianglePush,colors)==48);
+        static_assert(offsetof(TrianglePush,uvs)==96);
+        static_assert(offsetof(TrianglePush,index)==120);
+        static_assert(sizeof(TrianglePush)<=128);
+
+        void buildTrianglePipelines(const std::vector<vk::RenderPass>& passes,
+            vk::SampleCountFlagBits samples,vk::PipelineCache cache) {
+            if(features.limits.maxPushConstantsSize<sizeof(TrianglePush))
+                throw std::runtime_error("Textured triangles require 124 bytes of push constants");
+            const auto range=vk::PushConstantRange(vk::ShaderStageFlagBits::eVertex|vk::ShaderStageFlagBits::eFragment,0,sizeof(TrianglePush));
+            trianglePipelineLayout=device.createPipelineLayoutUnique(vk::PipelineLayoutCreateInfo({},descriptorLayout.get(),range));
+            auto vertex=shaders::image_renderer::triangles_vert(device);
+            auto batchVertex=shaders::image_renderer::triangles_batch_vert(device);
+            auto fragment=compat_mode?shaders::image_renderer::triangles_frag_compat(device):shaders::image_renderer::triangles_frag(device);
+            const std::array stages{
+                vk::PipelineShaderStageCreateInfo({},vk::ShaderStageFlagBits::eVertex,vertex.get(),"main"),
+                vk::PipelineShaderStageCreateInfo({},vk::ShaderStageFlagBits::eFragment,fragment.get(),"main")};
+            const vk::PipelineVertexInputStateCreateInfo input{};
+            const vk::VertexInputBindingDescription binding(0,sizeof(textured_vertex),vk::VertexInputRate::eVertex);
+            const std::array attributes{
+                vk::VertexInputAttributeDescription(0,0,vk::Format::eR32G32B32A32Sfloat,offsetof(textured_vertex,position)),
+                vk::VertexInputAttributeDescription(1,0,vk::Format::eR32G32Sfloat,offsetof(textured_vertex,uv)),
+                vk::VertexInputAttributeDescription(2,0,vk::Format::eR32G32B32A32Sfloat,offsetof(textured_vertex,color))};
+            const vk::PipelineVertexInputStateCreateInfo batchInput({},binding,attributes);
+            const std::array batchStages{
+                vk::PipelineShaderStageCreateInfo({},vk::ShaderStageFlagBits::eVertex,batchVertex.get(),"main"),
+                vk::PipelineShaderStageCreateInfo({},vk::ShaderStageFlagBits::eFragment,fragment.get(),"main")};
+            const vk::PipelineInputAssemblyStateCreateInfo assembly({},vk::PrimitiveTopology::eTriangleList);
+            const vk::Viewport viewportState{};
+            const vk::Rect2D scissorState{};
+            const vk::PipelineViewportStateCreateInfo viewport({},viewportState,scissorState);
+            const vk::PipelineRasterizationStateCreateInfo raster({},false,false,vk::PolygonMode::eFill,vk::CullModeFlagBits::eNone,vk::FrontFace::eCounterClockwise,false,0,0,0,1);
+            const vk::PipelineMultisampleStateCreateInfo multisample({},samples);
+            const std::array dynamicStates{vk::DynamicState::eViewport,vk::DynamicState::eScissor};
+            const vk::PipelineDynamicStateCreateInfo dynamic({},dynamicStates);
+            for(unsigned int variant=0;variant<4;++variant) {
+                const bool additive=(variant&1)!=0,depth=(variant&2)!=0;
+                const vk::PipelineDepthStencilStateCreateInfo depthState({},depth,depth,vk::CompareOp::eLessOrEqual);
+                const vk::PipelineColorBlendAttachmentState blend(true,vk::BlendFactor::eSrcAlpha,
+                    additive?vk::BlendFactor::eOne:vk::BlendFactor::eOneMinusSrcAlpha,vk::BlendOp::eAdd,
+                    vk::BlendFactor::eOne,vk::BlendFactor::eOneMinusSrcAlpha,vk::BlendOp::eAdd,
+                    vk::ColorComponentFlagBits::eR|vk::ColorComponentFlagBits::eG|vk::ColorComponentFlagBits::eB|vk::ColorComponentFlagBits::eA);
+                const vk::PipelineColorBlendStateCreateInfo color({},false,vk::LogicOp::eClear,blend);
+                const vk::GraphicsPipelineCreateInfo pipeline({},stages,&input,&assembly,nullptr,&viewport,&raster,&multisample,&depthState,&color,&dynamic,trianglePipelineLayout.get(),passes.at(0));
+                trianglePipelines[variant]=createPipelines(device,cache,pipeline,passes,"Textured triangle pipeline");
+                auto batchPipeline=pipeline;batchPipeline.setStages(batchStages).setPVertexInputState(&batchInput);
+                batchedTrianglePipelines[variant]=createPipelines(device,cache,batchPipeline,passes,"Batched textured triangle pipeline");
+            }
+        }
+        struct MeshChunk {
+            // Destruction order: unmap, destroy buffer, then free allocation.
+            vma::UniqueAllocation allocation;
+            vma::UniqueBuffer buffer;
+            std::unique_ptr<vma::MemoryMapping> mapping;
+            textured_vertex* vertices{};
+            std::size_t capacity{},used{};
+        };
+        struct MeshArena {
+            std::vector<std::unique_ptr<MeshChunk>> chunks;
+            std::size_t allocated{};
+            geometry_statistics statistics;
+            bool budget_reported{};
+        };
+        static constexpr std::size_t maximum_mesh_vertices=262144,minimum_mesh_chunk=4096;
+        vma::Allocator meshAllocator{};
+        std::vector<MeshArena> meshArenas;
+        std::vector<geometry_statistics> completedMeshStatistics;
+        std::array<UniquePipelineMap,4> batchedTrianglePipelines;
+        bool validTriangle(std::span<const textured_vertex> vertices) const {
+            for(const auto& vertex:vertices) {
+                if(vertex.position.w<=0 || !std::isfinite(vertex.uv.x) || !std::isfinite(vertex.uv.y)) return false;
+                for(int component=0;component<4;++component)
+                    if(!std::isfinite(vertex.position[component]) || !std::isfinite(vertex.color[component])) return false;
+            }
+            return true;
+        }
+        void renderMeshBatches(vk::CommandBuffer cmd,int frame,std::span<const textured_vertex> vertices,glm::vec4 tint) {
+            auto& arena=meshArenas[frame];
+            for(std::size_t first=0;first<vertices.size();) {
+                MeshChunk* chunk=nullptr;
+                for(auto& existing:arena.chunks) if(existing->capacity-existing->used>=3) { chunk=existing.get();break; }
+                if(!chunk && arena.allocated+3<=maximum_mesh_vertices) {
+                    const auto available=maximum_mesh_vertices-arena.allocated;
+                    const auto requested=std::max(minimum_mesh_chunk,std::min(vertices.size()-first,maximum_mesh_vertices));
+                    const auto capacity=std::min(available,std::bit_ceil(requested));
+                    auto allocated=std::make_unique<MeshChunk>();allocated->capacity=capacity;
+                    const vk::BufferCreateInfo info({},capacity*sizeof(textured_vertex),vk::BufferUsageFlagBits::eVertexBuffer,vk::SharingMode::eExclusive);
+                    const vma::AllocationCreateInfo memory({},vma::MemoryUsage::eCpuToGpu);
+                    auto [buffer,allocation]=meshAllocator.createBufferUnique(info,memory);
+                    allocated->allocation=std::move(allocation);allocated->buffer=std::move(buffer);
+                    allocated->mapping=std::make_unique<vma::MemoryMapping>(meshAllocator,allocated->allocation.get());
+                    allocated->vertices=static_cast<textured_vertex*>(allocated->mapping->get());
+                    chunk=allocated.get();arena.allocated+=capacity;arena.chunks.push_back(std::move(allocated));
+                }
+                if(!chunk) {
+                    if(!arena.budget_reported) { spdlog::warn("Textured mesh vertex budget ({}) exhausted",maximum_mesh_vertices);arena.budget_reported=true; }
+                    return;
+                }
+                const auto maximum=(chunk->capacity-chunk->used)/3*3;
+                std::size_t count=0;
+                while(first<vertices.size() && count+3<=maximum) {
+                    const auto triangle=vertices.subspan(first,3);first+=3;
+                    if(!validTriangle(triangle)) continue;
+                    for(const auto& vertex:triangle) { auto& output=chunk->vertices[chunk->used+count++];output=vertex;output.color*=tint; }
+                }
+                if(count==0) continue;
+                meshAllocator.flushAllocation(chunk->allocation.get(),chunk->used*sizeof(textured_vertex),count*sizeof(textured_vertex));
+                cmd.bindVertexBuffers(0,chunk->buffer.get(),vk::DeviceSize{0});
+                cmd.draw(static_cast<std::uint32_t>(count),1,static_cast<std::uint32_t>(chunk->used),0);
+                chunk->used+=count;
+                ++arena.statistics.draw_calls;arena.statistics.triangles+=count/3;arena.statistics.bytes_uploaded+=count*sizeof(textured_vertex);
+            }
+        }
+        vk::UniquePipelineLayout trianglePipelineLayout;
+        std::array<UniquePipelineMap,4> trianglePipelines;
+
         vk::Device device;
         vk::Extent2D frameSize;
         double aspectRatio;

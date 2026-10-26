@@ -25,6 +25,10 @@ phase::phase(window* window) :
 
 }
 
+void phase::submit_graphics(const vk::SubmitInfo& info, vk::Fence fence) {
+    win->submitGraphics(info, fence);
+}
+
 std::vector<vk::UniqueFramebuffer> phase::createFramebuffers(vk::RenderPass renderPass, const std::vector<vk::ImageView>& swapchainViews) const {
     return createFramebuffers(renderPass, swapchainViews, win->swapchainExtent);
 }

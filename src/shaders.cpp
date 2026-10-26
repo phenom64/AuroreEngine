@@ -66,6 +66,18 @@ namespace image_renderer {
     constexpr char frag_glass_array[] = {
     #embed "shaders/image_renderer.glass.frag.spv"
     };
+    constexpr char triangles_vert_array[] = {
+    #embed "shaders/image_renderer.triangles.vert.spv"
+    };
+    constexpr char triangles_batch_vert_array[] = {
+    #embed "shaders/image_renderer.triangles.batch.vert.spv"
+    };
+    constexpr char triangles_frag_array[] = {
+    #embed "shaders/image_renderer.triangles.frag.spv"
+    };
+    constexpr char triangles_frag_compat_array[] = {
+    #embed "shaders/image_renderer.triangles.compat.frag.spv"
+    };
     #pragma clang diagnostic pop
 
     constexpr std::array vert_shader = convert<std::to_array(vert_array), uint32_t>();
@@ -84,6 +96,22 @@ namespace image_renderer {
     }
     vk::UniqueShaderModule frag_glass(vk::Device device) {
         return createShader(device, frag_glass_shader);
+    }
+    vk::UniqueShaderModule triangles_vert(vk::Device device) {
+        constexpr auto code=convert<std::to_array(triangles_vert_array), uint32_t>();
+        return createShader(device,code);
+    }
+    vk::UniqueShaderModule triangles_batch_vert(vk::Device device) {
+        constexpr auto code=convert<std::to_array(triangles_batch_vert_array), uint32_t>();
+        return createShader(device,code);
+    }
+    vk::UniqueShaderModule triangles_frag(vk::Device device) {
+        constexpr auto code=convert<std::to_array(triangles_frag_array), uint32_t>();
+        return createShader(device,code);
+    }
+    vk::UniqueShaderModule triangles_frag_compat(vk::Device device) {
+        constexpr auto code=convert<std::to_array(triangles_frag_compat_array), uint32_t>();
+        return createShader(device,code);
     }
 }
 

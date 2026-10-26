@@ -84,6 +84,9 @@ export class phase
         vk::UniqueCommandPool pool;
         std::vector<vk::CommandBuffer> commandBuffers;
 
+        // Externally synchronize submissions shared with resource-loader workers.
+        void submit_graphics(const vk::SubmitInfo& info, vk::Fence fence = {});
+
         // Utility functions
         std::vector<vk::UniqueFramebuffer> createFramebuffers(vk::RenderPass renderPass, const std::vector<vk::ImageView>& swapchainViews, vk::Extent2D extent) const {
             std::vector<vk::UniqueFramebuffer> framebuffers;

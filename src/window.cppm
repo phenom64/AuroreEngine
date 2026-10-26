@@ -206,10 +206,10 @@ export class window
 
             std::scoped_lock lock(renderLock);
 
-            // Stop upload workers while renderer-owned destinations are still
-            // alive. This also guarantees no further queue submissions before
-            // the device-idle wait and allocator teardown below.
-            loader.reset();
+            // Drain uploads while their renderer-owned destinations are alive.
+            // Keep the loader itself alive until phase destructors finish:
+            // components may wait for their outstanding upload during teardown.
+            if(loader) loader->waitIdle();
 
             if(device) {
                 std::scoped_lock queueGuard(queueLock);
@@ -240,6 +240,7 @@ export class window
                 }
             }
             current_renderer.reset();
+            loader.reset();
 
             headlessTextures.clear();
             headlessOutputBuffers.clear();
@@ -343,10 +344,27 @@ export class window
                 spdlog::debug("Initializing SDL input");
                 initInput();
             }
+            if(config.headless) {
+                if(const auto* audio = std::getenv("DREAMRENDER_HEADLESS_AUDIO"); audio && std::string_view(audio) == "1")
+                    initAudio();
+            }
             spdlog::debug("Initializing Vulkan");
             initVulkan();
             spdlog::debug("Window initialization complete");
         }
+        // Queue operations, rather than the entire render callback, own this
+        // mutex. A phase may drain uploads while preparing a new scene without
+        // preventing an upload worker from submitting its final transfer.
+        void submitGraphics(const vk::SubmitInfo& info, vk::Fence fence = {}) {
+            std::scoped_lock queueGuard(queueLock);
+            graphicsQueue.submit(info, fence);
+        }
+        void waitIdle() {
+            if(loader) loader->waitIdle();
+            std::scoped_lock queueGuard(queueLock);
+            if(device) device->waitIdle();
+        }
+
         void loop() {
             startTime = std::chrono::steady_clock::now();
             lastFrame = startTime;
@@ -405,7 +423,7 @@ export class window
                     afterLimiter = now;
                 }
 
-                std::scoped_lock lock(renderLock, queueLock);
+                std::scoped_lock lock(renderLock);
                 r = device->waitForFences(inFlightFences[currentFrame], true, UINT64_MAX);
                 if(r != vk::Result::eSuccess)
                     spdlog::error("Waiting for inFlightFences[{}] failed with result {}", currentFrame, vk::to_string(r));
@@ -442,7 +460,11 @@ export class window
                                 std::filesystem::path path = config.headless_output_dir / std::vformat(config.headless_output_format, std::make_format_args(totalFrameNumber));
                                 std::string ext = path.extension().string();
                                 if(ext == ".png") {
-                                    sdl::image::SavePNG(surface.get(), path.string().c_str());
+                                    auto temporary = path;
+                                    temporary += ".part";
+                                    if(sdl::image::SavePNG(surface.get(), temporary.string().c_str()) == 0)
+                                        std::filesystem::rename(temporary, path);
+                                    else spdlog::error("Failed to save headless PNG {}", path.string());
                                 } else if(ext == ".jpg" || ext == ".jpeg") {
                                     sdl::image::SaveJPG(surface.get(), path.string().c_str(), config.headless_output_quality);
                                 } else if(ext == ".bmp") {
@@ -473,7 +495,7 @@ export class window
 
                     vk::PipelineStageFlags waitStages = vk::PipelineStageFlagBits::eColorAttachmentOutput;
                     vk::SubmitInfo submitInfo(0, {}, {}, 1, &commandBuffer, 1, &imageAvailableSemaphores[currentFrame].get());
-                    graphicsQueue.submit(submitInfo, {}); // no fence here, we just don't give a shit anymore
+                    submitGraphics(submitInfo, {});
                     afterAcquire = std::chrono::steady_clock::now();
                 } else {
                     std::tie(r, imageIndex) = device->acquireNextImageKHR(swapchain.get(), UINT64_MAX, imageAvailableSemaphores[currentFrame].get());
@@ -526,11 +548,14 @@ export class window
 
                     vk::PipelineStageFlags waitStages = vk::PipelineStageFlagBits::eColorAttachmentOutput;
                     vk::SubmitInfo submitInfo(1, &renderFinishedSemaphores[currentFrame].get(), &waitStages, 1, &commandBuffer, 0, {});
-                    graphicsQueue.submit(submitInfo, headlessFences[imageIndex].get()); // we need this fence, or everything explodes
+                    submitGraphics(submitInfo, headlessFences[imageIndex].get());
                     afterPresent = std::chrono::steady_clock::now();
                 } else {
                     vk::PresentInfoKHR present_info(renderFinishedSemaphores[currentFrame].get(), swapchain.get(), imageIndex);
-                    r = presentQueue.presentKHR(present_info);
+                    {
+                        std::scoped_lock queueGuard(queueLock);
+                        r = presentQueue.presentKHR(present_info);
+                    }
                     if(r == vk::Result::eErrorOutOfDateKHR || r == vk::Result::eSuboptimalKHR) {
                         spdlog::debug("Present {} ; recreating swapchain", (r==vk::Result::eErrorOutOfDateKHR?"out-of-date":"suboptimal"));
                         recreateSwapchain();

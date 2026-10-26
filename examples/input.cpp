@@ -102,7 +102,7 @@ class simple_phase : public dreamrender::phase, public input::keyboard_handler {
 
             vk::PipelineStageFlags waitStages = vk::PipelineStageFlagBits::eColorAttachmentOutput;
             vk::SubmitInfo submitInfo(1, &imageAvailable, &waitStages, 1, &commandBuffer, 1, &renderFinished);
-            graphicsQueue.submit(submitInfo, fence);
+            submit_graphics(submitInfo, fence);
         }
 
         void key_down(sdl::Keysym key) override {

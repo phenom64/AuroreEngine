@@ -29,6 +29,7 @@ option(DREAMS_BUILD_WITH_POSIX_THREADS "Build with POSIX threads" OFF)
 option(DREAMS_ALIAS_MODULES "CMake: Alias C++ module libraries" ON)
 option(DREAMS_FIND_PACKAGES "CMake: Find packages (if you disable this, you need to provide them)" ON)
 option(DREAMS_BUILD_V2_TESTS "Build backend-neutral Aurore v2 contract tests" ${PROJECT_IS_TOP_LEVEL})
+option(DREAMS_BUILD_RENDER_TESTS "Expose opt-in headless Vulkan rendering smoke targets" OFF)
 option(DREAMS_STABLE_CLANG_MODULE_OPTIMIZATION
   "Use the stable optimization tier for Clang C++ modules on Windows" ON)
 
@@ -94,4 +95,11 @@ endif()
 
 if(DREAMS_BUILD_EXAMPLES)
   add_subdirectory(examples)
+endif()
+
+if(DREAMS_BUILD_RENDER_TESTS)
+  add_executable(aurore_textured_triangles_smoke EXCLUDE_FROM_ALL
+    tests/integration/textured_triangles.cpp)
+  target_compile_features(aurore_textured_triangles_smoke PRIVATE cxx_std_23)
+  target_link_libraries(aurore_textured_triangles_smoke PRIVATE dreams::dreamrender)
 endif()

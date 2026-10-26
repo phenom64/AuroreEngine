@@ -23,6 +23,10 @@ namespace image_renderer {
     vk::UniqueShaderModule frag(vk::Device device);
     vk::UniqueShaderModule frag_compat(vk::Device device);
     vk::UniqueShaderModule frag_glass(vk::Device device);
+    vk::UniqueShaderModule triangles_vert(vk::Device device);
+    vk::UniqueShaderModule triangles_batch_vert(vk::Device device);
+    vk::UniqueShaderModule triangles_frag(vk::Device device);
+    vk::UniqueShaderModule triangles_frag_compat(vk::Device device);
 }
 
 namespace simple_renderer {

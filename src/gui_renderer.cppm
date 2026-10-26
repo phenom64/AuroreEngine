@@ -6,6 +6,8 @@
 module;
 
 #include <cstdint>
+#include <span>
+#include <cmath>
 #include <string_view>
 #include <vector>
 #include <algorithm>
@@ -34,6 +36,10 @@ export class gui_renderer {
 
         const vk::Extent2D frame_size;
         const double aspect_ratio;
+        // Per-context theme typography. Fresh contexts and reset() use neutral
+        // defaults so ordinary rectangles/images and existing callers are unchanged.
+        glm::vec4 text_color{1.0f};
+        float text_scale{1.0f};
 
         [[deprecated("ignores the color stack; use push_color_direct instead")]]
         void set_color(glm::vec4 color) {
@@ -131,10 +137,11 @@ export class gui_renderer {
                     y -= size.y / 2.0f;
             }
             apply_view();
-            font_renderer->renderText(commandBuffer, frame, renderPass, text, x, y, scale, color*this->color);
+            font_renderer->renderText(commandBuffer, frame, renderPass, text, x, y,
+                scale*effective_text_scale(), color*text_color*this->color);
         }
         glm::vec2 measure_text(std::string_view text, float scale) const {
-            return font_renderer->measureText(text, scale);
+            return font_renderer->measureText(text, scale*effective_text_scale());
         }
 
         void draw_image(const texture& texture, float x, float y, float scaleX = 1.0f, float scaleY = 1.0f,
@@ -143,6 +150,22 @@ export class gui_renderer {
             apply_view();
             image_renderer->renderImage(commandBuffer, frame, renderPass, texture, x, y, scaleX, scaleY, color*this->color);
         }
+        // Explicit screen-space mesh geometry, including perspective-correct
+        // UVs, vertex tint, optional additive blending and depth testing.
+        // Depth testing requires a depth attachment in the selected render pass.
+        void draw_textured_triangles(const texture& image,
+            std::span<const dreamrender::image_renderer::textured_vertex> vertices,
+            bool additive=false,bool depth=false) {
+            apply_view();
+            image_renderer->renderTexturedTriangles(commandBuffer,frame,renderPass,image,vertices,color,additive,depth);
+        }
+        void draw_textured_triangles(vk::ImageView image,
+            std::span<const dreamrender::image_renderer::textured_vertex> vertices,
+            bool additive=false,bool depth=false) {
+            apply_view();
+            image_renderer->renderTexturedTriangles(commandBuffer,frame,renderPass,image,vertices,color,additive,depth);
+        }
+
         void draw_image_a(const texture& texture, float x, float y, float scaleX = 1.0f, float scaleY = 1.0f,
             glm::vec4 color = glm::vec4(1.0, 1.0, 1.0, 1.0), bool center = true)
         {
@@ -227,6 +250,7 @@ export class gui_renderer {
         }
 
         void reset() {
+            text_color=glm::vec4(1.0f);text_scale=1.0f;
             reset_color();
             reset_clip();
         }
@@ -251,6 +275,7 @@ export class gui_renderer {
             return renderPass;
         }
     private:
+        float effective_text_scale() const { return std::isfinite(text_scale) && text_scale>0.0f?text_scale:1.0f; }
         void apply_view() {
             if(!viewport_stack.empty()) {
                 commandBuffer.setViewport(0, viewport_stack.back());

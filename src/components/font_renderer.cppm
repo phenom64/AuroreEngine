@@ -6,6 +6,8 @@
 module;
 
 #include <array>
+#include <algorithm>
+#include <functional>
 #include <cassert>
 #include <cmath>
 #include <cstring>
@@ -17,6 +19,8 @@ module;
 #include <unordered_map>
 #include <vector>
 #include <version>
+#include <limits>
+#include <cstdint>
 
 #include <glm/ext/vector_int2.hpp>
 
@@ -123,6 +127,17 @@ export class font_renderer {
               aspectRatio(static_cast<double>(frameSize.width) / frameSize.height),
               compat_mode(!check_features(features)) {}
         ~font_renderer() = default;
+        struct text_cache_statistics {
+            std::uint64_t hits{},misses{},evictions{};
+            std::size_t entries{},glyphs{};
+        };
+        [[nodiscard]] text_cache_statistics textCacheStatistics() const {
+#ifdef DREAMRENDER_USE_HARFBUZZ
+            return {shapeHits,shapeMisses,shapeEvictions,shapeCache.size(),cachedGlyphCount};
+#else
+            return {};
+#endif
+        }
 
 #ifdef DREAMRENDER_USE_HARFBUZZ
         // Upload required glyphs (with ligatures enabled) into the atlas before drawing
@@ -201,6 +216,10 @@ export class font_renderer {
             char32_t startChar = default_start_char, char32_t endChar = default_end_char,
             size_t maxCharacters = default_max_characters, size_t maxTexts = default_max_texts)
         {
+#ifdef DREAMRENDER_USE_HARFBUZZ
+            shapeCache.clear(); cachedGlyphCount=0; shapeClock=0;
+            shapeHits=shapeMisses=shapeEvictions=0;
+#endif
             this->maxCharacters = maxCharacters;
             this->maxTexts = maxTexts;
 
@@ -550,23 +569,15 @@ export class font_renderer {
 
 #ifdef DREAMRENDER_USE_HARFBUZZ
                 if(hbFont && hbBuffer) {
-                    hb_buffer_clear_contents(hbBuffer.get());
-                    hb_buffer_set_direction(hbBuffer.get(), HB_DIRECTION_LTR);
-                    hb_buffer_set_script(hbBuffer.get(), HB_SCRIPT_COMMON);
-                    hb_buffer_set_language(hbBuffer.get(), hb_language_from_string("en", -1));
-                    hb_buffer_add_utf8(hbBuffer.get(), text.data(), text.size(), 0, text.size());
-                    shape_character_addressable(hbFont.get(), hbBuffer.get());
-                    unsigned int gn = 0;
-                    auto* infos = hb_buffer_get_glyph_infos(hbBuffer.get(), &gn);
-                    auto* pos = hb_buffer_get_glyph_positions(hbBuffer.get(), &gn);
+                    const auto& shaped=shape_text(text);
                     float cx = 0.0f, cy = 0.0f;
-                    for(unsigned int i=0; i<gn; ++i) {
-                        uint32_t gid = infos[i].codepoint;
+                    for(const auto& positioned:shaped.glyphs) {
+                        uint32_t gid = positioned.glyph;
                         auto it = hbGlyphs.find(gid);
                         if(it == hbGlyphs.end()) { continue; }
                         const HBGlyph& g = it->second;
-                        float x_off = pos[i].x_offset/64.0f/lineHeight;
-                        float y_off = -pos[i].y_offset/64.0f/lineHeight;
+                        float x_off = positioned.x_offset;
+                        float y_off = positioned.y_offset;
                         if(compat_mode) {
                             float x0 = cx + x_off + static_cast<float>(g.bearing.x) / lineHeight;
                             float y0 = cy + y_off + static_cast<float>(baselinePx - g.bearing.y) / lineHeight;
@@ -590,7 +601,7 @@ export class font_renderer {
                             float y0 = cy + y_off + static_cast<float>(baselinePx - g.bearing.y) / lineHeight;
                             vc[total_chars] = { {x0, y0}, {static_cast<float>(g.atlasPos.x) / lineHeight, static_cast<float>(g.atlasPos.y) / lineHeight}, {static_cast<float>(g.bitmapSize.x) / lineHeight, static_cast<float>(g.bitmapSize.y) / lineHeight}, color };
                         }
-                        cx += pos[i].x_advance/64.0f/lineHeight;
+                        cx += positioned.advance;
                         total_chars++;
                     }
                 } else
@@ -685,18 +696,9 @@ export class font_renderer {
             float width = 0;
 #ifdef DREAMRENDER_USE_HARFBUZZ
             if(hbFont && hbBuffer) {
-                hb_buffer_clear_contents(hbBuffer.get());
-                hb_buffer_set_direction(hbBuffer.get(), HB_DIRECTION_LTR);
-                hb_buffer_set_script(hbBuffer.get(), HB_SCRIPT_COMMON);
-                hb_buffer_set_language(hbBuffer.get(), hb_language_from_string("en", -1));
-                hb_buffer_add_utf8(hbBuffer.get(), text.data(), text.size(), 0, text.size());
-                shape_character_addressable(hbFont.get(), hbBuffer.get());
-                unsigned int gn = 0;
-                auto* pos = hb_buffer_get_glyph_positions(hbBuffer.get(), &gn);
-                for(unsigned int i=0; i<gn; ++i) {
-                    width += pos[i].x_advance/64.0f/lineHeight;
-                }
-                // Return full text bounds in normalized units
+                // Measurement and every shadow/glow draw share the same shaped
+                // glyph run. Scale, position and colour do not affect shaping.
+                width=shape_text(text).advance;
                 return glm::vec2{width*scale/aspectRatio, scale};
             }
 #endif
@@ -827,6 +829,46 @@ export class font_renderer {
         vk::SampleCountFlagBits last_sample_count{vk::SampleCountFlagBits::e1};
 
 #ifdef DREAMRENDER_USE_HARFBUZZ
+        struct PositionedGlyph { std::uint32_t glyph; float x_offset,y_offset,advance; };
+        struct ShapedRun { std::vector<PositionedGlyph> glyphs; float advance{}; std::uint64_t used{}; };
+        struct TextHash {
+            using is_transparent=void;
+            std::size_t operator()(std::string_view text) const { return std::hash<std::string_view>{}(text); }
+        };
+        std::unordered_map<std::string,ShapedRun,TextHash,std::equal_to<>> shapeCache;
+        ShapedRun scratchShape;
+        std::size_t cachedGlyphCount{};
+        std::uint64_t shapeClock{},shapeHits{},shapeMisses{},shapeEvictions{};
+        static constexpr std::size_t maxCachedRuns=512,maxCachedGlyphs=65536;
+        const ShapedRun& shape_text(std::string_view text) {
+            if(auto cached=shapeCache.find(text);cached!=shapeCache.end()) {
+                ++shapeHits;cached->second.used=++shapeClock;return cached->second;
+            }
+            ++shapeMisses;
+            if(text.size()>static_cast<std::size_t>(std::numeric_limits<int>::max())) throw std::length_error("Text exceeds the shaping limit");
+            hb_buffer_clear_contents(hbBuffer.get());
+            hb_buffer_set_direction(hbBuffer.get(),HB_DIRECTION_LTR);
+            hb_buffer_set_script(hbBuffer.get(),HB_SCRIPT_COMMON);
+            hb_buffer_set_language(hbBuffer.get(),hb_language_from_string("en",-1));
+            hb_buffer_add_utf8(hbBuffer.get(),text.data(),static_cast<int>(text.size()),0,static_cast<int>(text.size()));
+            shape_character_addressable(hbFont.get(),hbBuffer.get());
+            unsigned int count{};
+            auto* infos=hb_buffer_get_glyph_infos(hbBuffer.get(),&count);
+            auto* positions=hb_buffer_get_glyph_positions(hbBuffer.get(),&count);
+            ShapedRun run;run.glyphs.reserve(count);run.used=++shapeClock;
+            for(unsigned int i=0;i<count;++i) {
+                const float advance=positions[i].x_advance/64.0f/lineHeight;
+                run.glyphs.push_back({infos[i].codepoint,positions[i].x_offset/64.0f/lineHeight,-positions[i].y_offset/64.0f/lineHeight,advance});
+                run.advance+=advance;
+            }
+            if(count>maxCachedGlyphs || text.size()>16384) { scratchShape=std::move(run);return scratchShape; }
+            while(!shapeCache.empty() && (shapeCache.size()>=maxCachedRuns || cachedGlyphCount+count>maxCachedGlyphs)) {
+                auto oldest=std::min_element(shapeCache.begin(),shapeCache.end(),[](const auto& a,const auto& b){return a.second.used<b.second.used;});
+                cachedGlyphCount-=oldest->second.glyphs.size();shapeCache.erase(oldest);++shapeEvictions;
+            }
+            auto entry=shapeCache.emplace(std::string(text),std::move(run)).first;
+            cachedGlyphCount+=entry->second.glyphs.size();return entry->second;
+        }
         struct HbBufferDeleter { void operator()(hb_buffer_t* b) const noexcept { if(b) hb_buffer_destroy(b); } };
         struct HbFontDeleter { void operator()(hb_font_t* f) const noexcept { if(f) hb_font_destroy(f); } };
         std::unique_ptr<ft_library_wrapper> hbFtLib;
