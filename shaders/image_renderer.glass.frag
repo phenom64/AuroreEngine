@@ -35,18 +35,18 @@ vec4 frame() {
     vec3 result=mix(bg*(1.0-0.035*pc.color.a),vec3(1),alpha);
     return vec4(srgb_to_linear(result)*coverage,coverage);
 }
-// Lighting is baked into B; RG retains the silhouette's soft bevel normal.
-// Blend the tinted material over the live, slightly refracted background.
+// RGBA caches body light, white gloss, opacity and silhouette coverage.
+// Tint stays dynamic; all bevel, lighting and translucency work is baked offline.
 vec4 glassIcon(vec2 uv) {
     vec4 material=texture(uNormalMap,uv);
     if(material.a<1.0/255.0) return vec4(0);
     vec2 screen=gl_FragCoord.xy/vec2(textureSize(uBackgroundMap,0));
-    vec2 normal=material.rg*2.0-1.0;
-    vec2 offset=normal*8.0/vec2(textureSize(uBackgroundMap,0));
-    vec3 background=linear_to_srgb(texture(uBackgroundMap,clamp(screen-offset,vec2(0),vec2(1))).rgb);
-    vec3 surface=clamp(material.b*pc.color.rgb,vec3(0),vec3(1));
-    float alpha=clamp(material.a*pc.color.a,0.0,1.0);
-    return vec4(srgb_to_linear(mix(background,surface,alpha)),1);
+    vec3 background=linear_to_srgb(texture(uBackgroundMap,screen).rgb);
+    vec3 surface=material.r*pc.color.rgb+material.g;
+    float opacity=clamp(max(material.b,max(surface.r,max(surface.g,surface.b))),0.0,1.0);
+    float coverage=clamp(material.a*pc.color.a,0.0,1.0);
+    vec3 result=background*(1.0-opacity*coverage)+min(surface,vec3(opacity))*coverage;
+    return vec4(srgb_to_linear(result),1);
 }
 
 void main() {

@@ -22,6 +22,16 @@ This engine is designed for simplicity, portability (really important) and ease 
 *   **CMake-Friendly:** Designed to be easily included in larger projects using CMake's `FetchContent`.
 *   **Headless Rendering:** Supports rendering without a visible window, useful for testing or server-side tasks.
 
+## Current desktop work
+
+The engine exposes the `auroreengine` module, namespace and CMake target. Recent
+desktop work includes padded glyph-atlas shadow and selection glow, retained and
+batched textured geometry, lazy blur allocations and resource-upload improvements.
+The optional textured-triangles smoke test exercises rendering and upload behavior;
+see [textured geometry](docs/textured-geometry.md). These implementation changes
+do not establish a frame-rate target or cross-platform runtime coverage. OpenGL ES
+and handheld support remain future work.
+
 ## Core Concepts
 
 The engine's architecture is built around a few key classes:
