@@ -17,7 +17,7 @@ module;
 #include <cstddef>
 #include <stdexcept>
 
-export module dreamrender:components.image_renderer;
+export module auroreengine:components.image_renderer;
 
 import :shaders;
 import :texture;
@@ -27,12 +27,13 @@ import glm;
 import vulkan_hpp;
 import vma;
 
-namespace dreamrender {
+namespace auroreengine {
 
 struct push_constants {
     glm::mat4 matrix;
     glm::vec4 color;
     unsigned int index;
+    unsigned int encoding;
 };
 
 export class image_renderer {
@@ -282,6 +283,7 @@ export class image_renderer {
             imageInfos[frameIndex].clear();
         }
 
+        void setOutputEncoded(bool encoded) noexcept { outputEncoding=encoded?1u:0u; }
         void setGlassBackground(vk::ImageView view) {
             glassBackgroundView = view;
         }
@@ -293,7 +295,7 @@ export class image_renderer {
 
         // Glass icon variant: imported xmb-web normal map + live background.
         void renderImageGlass(vk::CommandBuffer cmd, int frame, vk::RenderPass renderPass, vk::ImageView iconView,
-                              float x, float y, float scaleX, float scaleY, glm::vec4 color = glm::vec4(1.0,1.0,1.0,1.0))
+                              float x, float y, float scaleX, float scaleY, glm::vec4 color = glm::vec4(1.0,1.0,1.0,1.0),unsigned mode=0)
         {
             if(!iconView) return;
             if(frame < 0) return;
@@ -330,12 +332,17 @@ export class image_renderer {
             push.matrix = glm::mat4(1.0f);
             push.matrix = glm::translate(push.matrix, glm::vec3(pos, 0.0f));
             push.matrix = glm::scale(push.matrix, glm::vec3(scaleX / aspectRatio, scaleY, 1.0f));
-            push.index = 0;
+            push.index = mode;
             push.color = color;
+            push.encoding=outputEncoding;
             cmd.pushConstants<push_constants>(pipelineLayoutGlass.get(), vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, push);
             cmd.draw(4, 1, 0, 0);
         }
 
+        void renderGlassFrame(vk::CommandBuffer cmd,int frame,vk::RenderPass pass,float x,float y,float width,float height,float opacity) {
+            if(!glassBackgroundView) return;
+            renderImageGlass(cmd,frame,pass,glassBackgroundView,x,y,width,height,{1,1,1,opacity},1);
+        }
         void renderImage(vk::CommandBuffer cmd, int frame, vk::RenderPass renderPass, vk::ImageView view, float x, float y, float scaleX, float scaleY, glm::vec4 color = glm::vec4(1.0, 1.0, 1.0, 1.0)) {
             if(!view)
                 return;
@@ -378,6 +385,7 @@ export class image_renderer {
             push.matrix = glm::scale(push.matrix, glm::vec3(scaleX / aspectRatio, scaleY, 1.0f));
             push.index = index;
             push.color = color;
+            push.encoding=outputEncoding;
 
             cmd.pushConstants<push_constants>(pipelineLayout.get(),
                 vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, push);
@@ -418,7 +426,7 @@ export class image_renderer {
             }
             cmd.bindPipeline(vk::PipelineBindPoint::eGraphics,pipeline->second.get());
             cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics,trianglePipelineLayout.get(),0,descriptorSet,{});
-            TrianglePush push{};push.index=imageIndex;
+            TrianglePush push{};push.index=imageIndex;push.encoding=outputEncoding;
             if(batched) {
                 // The batch vertex shader reads the arena, while the shared
                 // fragment shader needs only the texture index at offset120.
@@ -492,6 +500,7 @@ export class image_renderer {
             push.matrix = glm::scale(push.matrix, glm::vec3(scaleX, scaleY, 1.0f));
             push.index = index;
             push.color = color;
+            push.encoding=outputEncoding;
 
             cmd.pushConstants<push_constants>(pipelineLayout.get(),
                 vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, push);
@@ -502,11 +511,13 @@ export class image_renderer {
             renderImageSized(cmd, frame, renderPass, texture.imageView.get(), x, y, width == -1 ? texture.width : width, height == -1 ? texture.height : height, color);
         }
     private:
+        unsigned outputEncoding{};
         struct TrianglePush {
             std::array<glm::vec4,3> positions;
             std::array<glm::vec4,3> colors;
             std::array<glm::vec2,3> uvs;
             std::uint32_t index;
+            std::uint32_t encoding;
         };
         static_assert(offsetof(TrianglePush,colors)==48);
         static_assert(offsetof(TrianglePush,uvs)==96);

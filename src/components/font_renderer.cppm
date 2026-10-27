@@ -26,12 +26,12 @@ module;
 
 #include <ft2build.h>
 #include <freetype/freetype.h>
-#ifdef DREAMRENDER_USE_HARFBUZZ
+#ifdef AUROREENGINE_USE_HARFBUZZ
 #include <harfbuzz/hb.h>
 #include <harfbuzz/hb-ft.h>
 #endif
 
-export module dreamrender:components.font_renderer;
+export module auroreengine:components.font_renderer;
 
 import :resource_loader;
 import :shaders;
@@ -43,9 +43,38 @@ import glm;
 import vulkan_hpp;
 import vma;
 
-namespace dreamrender {
+namespace auroreengine {
 
-#ifdef DREAMRENDER_USE_HARFBUZZ
+namespace {
+constexpr int glyph_padding = 8;
+// Bake shadow and halo coverage once at upload time. Styled text still uses
+// one glyph draw and two texture samples, with no intermediate render targets.
+std::vector<uint8_t> bake_glyph(const FT_Bitmap& bitmap) {
+    const int w=bitmap.width+2*glyph_padding, h=bitmap.rows+2*glyph_padding;
+    std::vector<uint8_t> result(w*h*4,0);
+    std::vector<float> base(w*h,0), tmp(w*h), blurred(w*h);
+    for(int y=0;y<static_cast<int>(bitmap.rows);++y) for(int x=0;x<static_cast<int>(bitmap.width);++x)
+        base[(y+glyph_padding)*w+x+glyph_padding]=bitmap.buffer[y*bitmap.pitch+x]/255.0f;
+    for(int i=0;i<w*h;++i) result[i*4]=result[i*4+3]=static_cast<uint8_t>(base[i]*255);
+    for(int channel=1;channel<=2;++channel) {
+        const int radius=channel==1?3:7;
+        const float sigma=channel==1?1.2f:2.8f;
+        std::array<float,15> kernel{}; float sum=0;
+        for(int k=-radius;k<=radius;++k) { const float weight=std::exp(-k*k/(2*sigma*sigma)); kernel[k+radius]=weight;sum+=weight; }
+        for(int y=0;y<h;++y) for(int x=0;x<w;++x) {
+            float v=0; for(int k=-radius;k<=radius;++k) if(x+k>=0&&x+k<w) v+=base[y*w+x+k]*kernel[k+radius];
+            tmp[y*w+x]=v/sum;
+        }
+        for(int y=0;y<h;++y) for(int x=0;x<w;++x) {
+            float v=0; for(int k=-radius;k<=radius;++k) if(y+k>=0&&y+k<h) v+=tmp[(y+k)*w+x]*kernel[k+radius];
+            result[(y*w+x)*4+channel]=static_cast<uint8_t>(std::clamp(v/sum*255,0.0f,255.0f));
+        }
+    }
+    return result;
+}
+}
+
+#ifdef AUROREENGINE_USE_HARFBUZZ
 namespace {
 
 // The current atlas is pre-populated by Unicode character coverage, while
@@ -132,14 +161,14 @@ export class font_renderer {
             std::size_t entries{},glyphs{};
         };
         [[nodiscard]] text_cache_statistics textCacheStatistics() const {
-#ifdef DREAMRENDER_USE_HARFBUZZ
+#ifdef AUROREENGINE_USE_HARFBUZZ
             return {shapeHits,shapeMisses,shapeEvictions,shapeCache.size(),cachedGlyphCount};
 #else
             return {};
 #endif
         }
 
-#ifdef DREAMRENDER_USE_HARFBUZZ
+#ifdef AUROREENGINE_USE_HARFBUZZ
         // Upload required glyphs (with ligatures enabled) into the atlas before drawing
         void stage_glyphs(vk::CommandBuffer cmd, std::string_view text)
         {
@@ -216,7 +245,7 @@ export class font_renderer {
             char32_t startChar = default_start_char, char32_t endChar = default_end_char,
             size_t maxCharacters = default_max_characters, size_t maxTexts = default_max_texts)
         {
-#ifdef DREAMRENDER_USE_HARFBUZZ
+#ifdef AUROREENGINE_USE_HARFBUZZ
             shapeCache.clear(); cachedGlyphCount=0; shapeClock=0;
             shapeHits=shapeMisses=shapeEvictions=0;
 #endif
@@ -240,7 +269,7 @@ export class font_renderer {
             if(FT_Set_Pixel_Sizes(ftFace->get(), 0, fontSize) != 0) {
                 throw std::runtime_error("Failed to set font size");
             }
-#ifdef DREAMRENDER_USE_HARFBUZZ
+#ifdef AUROREENGINE_USE_HARFBUZZ
             int width = 2048, height = 2048;
             spdlog::debug("Font atlas (HB) {}x{}", width, height);
             // Init line height/baseline from face metrics
@@ -276,21 +305,17 @@ export class font_renderer {
                     FT_GlyphSlot slot = face.get()->glyph;
                     FT_Bitmap bmp = slot->bitmap;
 
-                    int w = bmp.width, h = bmp.rows;
+                    int w = bmp.width ? bmp.width+2*glyph_padding : 0, h = bmp.rows ? bmp.rows+2*glyph_padding : 0;
                     if(w == 0 || h == 0) {
                         hbGlyphs.emplace(gid, HBGlyph{ {packX, packY}, {0,0}, {slot->bitmap_left, slot->bitmap_top}, int(slot->advance.x >> 6) });
                         return;
                     }
                     if(packX + w > atlasWidth) { packX = 0; packY += packShelfH; packShelfH = 0; }
                     if(packY + h > atlasHeight) return; // out of space
-                    for(int yy=0; yy<h; ++yy) {
-                        for(int xx=0; xx<w; ++xx) {
-                            uint8_t v = bmp.buffer[yy*bmp.pitch + xx];
-                            size_t o = (static_cast<size_t>(packY+yy) * static_cast<size_t>(width) + static_cast<size_t>(packX+xx)) * 4ull;
-                            p[o+0] = v; p[o+1] = v; p[o+2] = v; p[o+3] = v;
-                        }
-                    }
-                    hbGlyphs.emplace(gid, HBGlyph{ {packX, packY}, {w, h}, {slot->bitmap_left, slot->bitmap_top}, int(slot->advance.x >> 6) });
+                    const auto baked=bake_glyph(bmp);
+                    for(int yy=0; yy<h; ++yy)
+                        std::memcpy(p+((packY+yy)*width+packX)*4,baked.data()+yy*w*4,w*4);
+                    hbGlyphs.emplace(gid, HBGlyph{ {packX, packY}, {w, h}, {slot->bitmap_left-glyph_padding, slot->bitmap_top+glyph_padding}, int(slot->advance.x >> 6) });
                     packX += w + 1; packShelfH = std::max(packShelfH, h + 1);
                 };
 
@@ -326,8 +351,9 @@ export class font_renderer {
                 maxWidth = std::max(maxWidth, static_cast<unsigned int>(slot->bitmap.width));
                 maxHeight = std::max(maxHeight, static_cast<unsigned int>(slot->bitmap.rows));
             }
-            maxWidth += 4;
-            maxHeight += 4;
+            const auto metricHeight=maxHeight+4;
+            maxWidth += 2*glyph_padding+2;
+            maxHeight += 2*glyph_padding+2;
 
             long width = std::max(1u, columns * maxWidth);
             long height = std::max(1u, rows * maxHeight);
@@ -352,16 +378,16 @@ export class font_renderer {
                     int tileX = c * maxWidth;
                     int tileY = r * maxHeight;
                     GlyphMetrics gm;
-                    gm.bitmapSize = {slot->bitmap.width, slot->bitmap.rows};
-                    gm.bearing = {slot->bitmap_left, slot->bitmap_top};
+                    gm.bitmapSize = {slot->bitmap.width+2*glyph_padding, slot->bitmap.rows+2*glyph_padding};
+                    gm.bearing = {slot->bitmap_left-glyph_padding, slot->bitmap_top+glyph_padding};
                     gm.advance = (slot->advance.x >> 6);
                     // top-left of the bitmap inside the tile
-                    gm.atlasPos = {tileX + 0, tileY + (baseline - slot->bitmap_top)};
+                    gm.atlasPos = {tileX, tileY};
                     glyphs.emplace(ch, gm);
                     ch++;
                 }
             }
-            lineHeight = static_cast<float>(maxHeight);
+            lineHeight = static_cast<float>(metricHeight);
             baselinePx = baseline;
 #endif
 
@@ -377,7 +403,7 @@ export class font_renderer {
                 .ftManager=std::move(ftManager), .ftFace=std::move(ftFace)
             };
 
-#ifndef DREAMRENDER_USE_HARFBUZZ
+#ifndef AUROREENGINE_USE_HARFBUZZ
             // Use UNORM to avoid sRGB gamma interaction on grayscale glyphs
             fontTexture = std::make_unique<texture>(device, allocator, width, height,
                 vk::ImageUsageFlagBits::eSampled, vk::Format::eR8G8B8A8Unorm);
@@ -409,21 +435,10 @@ export class font_renderer {
                             }
                             FT_GlyphSlot slot = ftFace->glyph;
                             FT_Bitmap bitmap = slot->bitmap;
-                            for(int y=0; y<bitmap.rows; y++) {
-                                for(int x=0; x<bitmap.width; x++) {
-                                    if(ch > endChar) {
-                                        break;
-                                    }
-
-                                    unsigned char pixel_brightness = bitmap.buffer[y * bitmap.pitch + x];
-                                    unsigned int color = pixel_brightness | pixel_brightness << 8 | pixel_brightness << 16 | pixel_brightness << 24;
-
-                                    int dx = x;
-                                    int dy = y + baseline - slot->bitmap_top; // position glyph relative to baseline
-
-                                    pixels[(r*maxHeight + dy)*width + c*maxWidth + dx] = color;
-                                }
-                            }
+                            const auto baked=bake_glyph(bitmap);
+                            const int bw=bitmap.width+2*glyph_padding, bh=bitmap.rows+2*glyph_padding;
+                            for(int yy=0;yy<bh;++yy)
+                                std::memcpy(p+((r*maxHeight+yy)*width+c*maxWidth)*4,baked.data()+yy*bw*4,bw*4);
                             ch++;
                         }
                     }
@@ -437,7 +452,7 @@ export class font_renderer {
                 0.0f, false, 0.0f, false, vk::CompareOp::eNever, 0.0f, 0.0f, vk::BorderColor::eFloatTransparentBlack, false);
             sampler = device.createSamplerUnique(sampler_info);
 
-#ifdef DREAMRENDER_USE_HARFBUZZ
+#ifdef AUROREENGINE_USE_HARFBUZZ
             // Create persistent FT + HB objects for shaping
             hbFtLib = std::make_unique<ft_library_wrapper>();
             shapingFace = std::make_unique<ft_face_wrapper>(hbFtLib->get(), fontName);
@@ -550,7 +565,8 @@ export class font_renderer {
         }
 
         void renderText(vk::CommandBuffer cmd, int frame, vk::RenderPass renderPass, std::string_view text,
-            float x, float y, float scale = 1.0f, glm::vec4 color = glm::vec4(1.0, 1.0, 1.0, 1.0))
+            float x, float y, float scale = 1.0f, glm::vec4 color = glm::vec4(1.0, 1.0, 1.0, 1.0),
+            float shadow=0.0f, float glow=0.0f,glm::vec4 fade_bounds=glm::vec4(0),glm::vec4 fade_values=glm::vec4(1))
         {
             if(vertexOffsets[frame] + text.size() > maxTexts*maxCharacters) {
                 throw std::runtime_error("Too many characters");
@@ -567,7 +583,7 @@ export class font_renderer {
             {
                 VertexCharacter* vc = vertexPointers[frame] + compat_factor*vertexOffsets[frame];
 
-#ifdef DREAMRENDER_USE_HARFBUZZ
+#ifdef AUROREENGINE_USE_HARFBUZZ
                 if(hbFont && hbBuffer) {
                     const auto& shaped=shape_text(text);
                     float cx = 0.0f, cy = 0.0f;
@@ -653,6 +669,9 @@ export class font_renderer {
                 matrix = glm::translate(matrix, glm::vec3(pos, 0.0f));
                 matrix = glm::scale(matrix, glm::vec3(scale/aspectRatio, scale, 1.0f));
                 uni.matrix = matrix;
+                uni.effects={shadow,glow,0.0f,1.4f/static_cast<float>(fontTexture->height)};
+                uni.fade_bounds=fade_bounds;uni.fade_values=fade_values;
+
                 // Provide atlas dimensions in pixels; shader divides by this to normalize
                 if(compat_mode) {
                     // compat path uses normalized texcoords
@@ -692,9 +711,11 @@ export class font_renderer {
             vertexOffsets[frame] += total_chars;
             uniformOffsets[frame]++;
         }
+        float emScale() const noexcept { return 2.0f*lineHeight/std::max(fontSize,1); }
+        float baselineEm() const noexcept { return static_cast<float>(baselinePx)/std::max(fontSize,1); }
         glm::vec2 measureText(std::string_view text, float scale = 1.0f) {
             float width = 0;
-#ifdef DREAMRENDER_USE_HARFBUZZ
+#ifdef AUROREENGINE_USE_HARFBUZZ
             if(hbFont && hbBuffer) {
                 // Measurement and every shadow/glow draw share the same shaped
                 // glyph run. Scale, position and colour do not affect shaping.
@@ -776,7 +797,7 @@ export class font_renderer {
             }
         }
         
-#ifdef DREAMRENDER_USE_HARFBUZZ
+#ifdef AUROREENGINE_USE_HARFBUZZ
         struct HBGlyph {
             glm::ivec2 atlasPos;
             glm::ivec2 bitmapSize;
@@ -793,7 +814,7 @@ export class font_renderer {
             if(FT_Render_Glyph(face->glyph, FT_RENDER_MODE_NORMAL) != 0) return nullptr;
             FT_GlyphSlot slot = face->glyph;
             FT_Bitmap bmp = slot->bitmap;
-            int w = bmp.width, h = bmp.rows;
+            int w = bmp.width ? bmp.width+2*glyph_padding : 0, h = bmp.rows ? bmp.rows+2*glyph_padding : 0;
             if(w == 0 || h == 0) {
                 // Space-like glyph; synthesize empty entry with zero bitmap
                 auto [it, ok] = hbGlyphs.emplace(gid, HBGlyph{ {packX, packY}, {0,0}, {slot->bitmap_left, slot->bitmap_top}, int(slot->advance.x >> 6) });
@@ -805,16 +826,9 @@ export class font_renderer {
                 spdlog::error("Font atlas full ({}x{}); cannot place glyph {}", atlasWidth, atlasHeight, gid);
                 return nullptr;
             }
-            // Copy grayscale to RGBA in staging buffer
-            uint8_t* dst = stagingBase + curOffset;
-            for(int yy=0; yy<h; ++yy) {
-                for(int xx=0; xx<w; ++xx) {
-                    uint8_t v = bmp.buffer[yy*bmp.pitch + xx];
-                    size_t o = (size_t(yy)*size_t(w) + size_t(xx)) * 4;
-                    dst[o+0] = v; dst[o+1] = v; dst[o+2] = v; dst[o+3] = v;
-                }
-            }
-            HBGlyph entry{ {packX, packY}, {w, h}, {slot->bitmap_left, slot->bitmap_top}, int(slot->advance.x >> 6) };
+            const auto baked=bake_glyph(bmp);
+            std::memcpy(stagingBase+curOffset,baked.data(),baked.size());
+            HBGlyph entry{ {packX, packY}, {w, h}, {slot->bitmap_left-glyph_padding, slot->bitmap_top+glyph_padding}, int(slot->advance.x >> 6) };
             auto res = hbGlyphs.emplace(gid, entry);
             packX += w + 1; packShelfH = std::max(packShelfH, h + 1);
             return &res.first->second;
@@ -828,7 +842,7 @@ export class font_renderer {
         bool compat_mode{};
         vk::SampleCountFlagBits last_sample_count{vk::SampleCountFlagBits::e1};
 
-#ifdef DREAMRENDER_USE_HARFBUZZ
+#ifdef AUROREENGINE_USE_HARFBUZZ
         struct PositionedGlyph { std::uint32_t glyph; float x_offset,y_offset,advance; };
         struct ShapedRun { std::vector<PositionedGlyph> glyphs; float advance{}; std::uint64_t used{}; };
         struct TextHash {
@@ -910,6 +924,9 @@ export class font_renderer {
             glm::mat4 matrix;
             glm::vec2 textureSize;
             glm::vec2 _pad; // std140 padding to 16-byte multiple
+            glm::vec4 effects;
+            glm::vec4 fade_bounds;
+            glm::vec4 fade_values;
         };
         std::vector<VertexCharacter*> vertexPointers;
         std::vector<aligned_wrapper<TextUniform>> uniformPointers;

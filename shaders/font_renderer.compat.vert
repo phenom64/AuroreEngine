@@ -17,6 +17,10 @@ layout(binding = 0, std140) uniform UBO
 {
 	mat4 matrix;
 	vec2 textureSize;
+    vec2 _pad;
+    vec4 effects;
+    vec4 fade_bounds;
+    vec4 fade_values;
 } uni;
 
 void main()

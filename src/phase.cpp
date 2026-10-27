@@ -7,14 +7,14 @@ module;
 
 #include <vector>
 
-module dreamrender;
+module auroreengine;
 
 import :window;
 import :phase;
 
 import vulkan_hpp;
 
-namespace dreamrender {
+namespace auroreengine {
 
 phase::phase(window* window) :
     win(window),

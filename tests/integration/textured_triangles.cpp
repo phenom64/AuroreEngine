@@ -12,17 +12,17 @@
 #include <thread>
 #include <vector>
 
-import dreamrender;
+import auroreengine;
 import glm;
 import vulkan_hpp;
 
-class geometry_phase final : public dreamrender::phase {
+class geometry_phase final : public auroreengine::phase {
 public:
-    explicit geometry_phase(dreamrender::window* window)
+    explicit geometry_phase(auroreengine::window* window)
         : phase(window),image(device,allocator,2,2),drained(device,allocator,1,1),
           renderer(device,window->swapchainExtent,window->gpuFeatures) {
         renderer.setAllocator(allocator);
-        using Vertex=dreamrender::image_renderer::textured_vertex;
+        using Vertex=auroreengine::image_renderer::textured_vertex;
         checker.reserve(24576);
         for(int y=0;y<64;++y) for(int x=0;x<64;++x) {
             const float left=x/64.0f,right=(x+1)/64.0f,top=y/64.0f,bottom=(y+1)/64.0f;
@@ -32,7 +32,7 @@ public:
             const std::array vertices{a,b,c,c,b,d};
             checker.insert(checker.end(),vertices.begin(),vertices.end());
         }
-        using V=dreamrender::image_renderer::textured_vertex;
+        using V=auroreengine::image_renderer::textured_vertex;
         overlay={V{{0.4f,0.4f,0.2f,1},{0,0},{0,1,0,0.25f}},V{{0.6f,0.4f,0.2f,1},{1,0},{0,1,0,0.25f}},
                  V{{0.4f,0.6f,0.2f,1},{0,1},{0,1,0,0.25f}},V{{0.4f,0.6f,0.2f,1},{0,1},{0,1,0,0.25f}},
                  V{{0.6f,0.4f,0.2f,1},{1,0},{0,1,0,0.25f}},V{{0.6f,0.6f,0.2f,1},{1,1},{0,1,0,0.25f}}};
@@ -54,14 +54,14 @@ public:
             vk::AccessFlagBits::eDepthStencilAttachmentWrite,vk::AccessFlagBits::eColorAttachmentWrite|vk::AccessFlagBits::eDepthStencilAttachmentWrite);
         pass=device.createRenderPassUnique(vk::RenderPassCreateInfo({},attachments,subpass,dependency));
         renderer.preload({pass.get()},win->config.sampleCount);
-        add_task(loader->loadTexture(&image,dreamrender::LoaderFunction{[](std::uint8_t* data,std::size_t capacity) {
+        add_task(loader->loadTexture(&image,auroreengine::LoaderFunction{[](std::uint8_t* data,std::size_t capacity) {
             if(capacity<16) throw std::runtime_error("Upload staging capacity");std::memset(data,255,16);
         }}));
     }
     void prepare(std::vector<vk::Image> images,std::vector<vk::ImageView> views) override {
         phase::prepare(images,views);
         for(auto view:views) {
-            auto depth=std::make_unique<dreamrender::texture>(device,allocator,win->swapchainExtent,
+            auto depth=std::make_unique<auroreengine::texture>(device,allocator,win->swapchainExtent,
                 vk::ImageUsageFlagBits::eDepthStencilAttachment,vk::Format::eD32Sfloat,
                 win->config.sampleCount,false,vk::ImageAspectFlagBits::eDepth);
             const std::array attachments{view,depth->imageView.get()};
@@ -73,7 +73,7 @@ public:
     }
     void render(int frame,vk::Semaphore available,vk::Semaphore finished,vk::Fence fence) override {
         if(!drain_checked) {
-            auto pending=loader->loadTexture(&drained,dreamrender::LoaderFunction{[](std::uint8_t* bytes,std::size_t) {
+            auto pending=loader->loadTexture(&drained,auroreengine::LoaderFunction{[](std::uint8_t* bytes,std::size_t) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(20));std::memset(bytes,255,4);
             }});
             // This used to deadlock when the window held the shared queue mutex
@@ -88,7 +88,7 @@ public:
         command.beginRenderPass(vk::RenderPassBeginInfo(pass.get(),framebuffers[frame].get(),vk::Rect2D({0,0},win->swapchainExtent),clear),vk::SubpassContents::eInline);
         const vk::Viewport viewport(0,0,win->swapchainExtent.width,win->swapchainExtent.height,0,1);
         const vk::Rect2D scissor({0,0},win->swapchainExtent);command.setViewport(0,viewport);command.setScissor(0,scissor);
-        dreamrender::gui_renderer gui(command,frame,pass.get(),win->swapchainExtent,nullptr,&renderer,nullptr);
+        auroreengine::gui_renderer gui(command,frame,pass.get(),win->swapchainExtent,nullptr,&renderer,nullptr);
         gui.draw_textured_triangles(image,checker,false,true);
         auto hidden=overlay;
         for(auto& vertex:hidden) { vertex.position.z=0.8f;vertex.color=glm::vec4(1); }
@@ -97,30 +97,30 @@ public:
         gui.draw_textured_triangles(image,overlay,true);
         command.endRenderPass();renderer.finish(frame);command.end();
         const auto stats=renderer.geometryStatistics(frame);
-        if(stats.triangles!=8196 || stats.draw_calls!=3 || stats.bytes_uploaded!=24588*sizeof(dreamrender::image_renderer::textured_vertex))
+        if(stats.triangles!=8196 || stats.draw_calls!=3 || stats.bytes_uploaded!=24588*sizeof(auroreengine::image_renderer::textured_vertex))
             throw std::runtime_error("Mesh batching statistics are incorrect");
         std::cout<<"geometry draws="<<stats.draw_calls<<" triangles="<<stats.triangles<<" upload_bytes="<<stats.bytes_uploaded<<" capacity="<<stats.resident_vertex_capacity<<'\n';
         const vk::PipelineStageFlags wait=vk::PipelineStageFlagBits::eColorAttachmentOutput;
         const vk::SubmitInfo submit(1,&available,&wait,1,&command,1,&finished);submit_graphics(submit,fence);
     }
 private:
-    dreamrender::texture image,drained;
-    dreamrender::image_renderer renderer;
+    auroreengine::texture image,drained;
+    auroreengine::image_renderer renderer;
     vk::UniqueRenderPass pass;
-    std::vector<std::unique_ptr<dreamrender::texture>> depths;
+    std::vector<std::unique_ptr<auroreengine::texture>> depths;
     std::vector<vk::UniqueFramebuffer> framebuffers;
-    std::vector<dreamrender::image_renderer::textured_vertex> checker;
-    std::array<dreamrender::image_renderer::textured_vertex,6> overlay;
+    std::vector<auroreengine::image_renderer::textured_vertex> checker;
+    std::array<auroreengine::image_renderer::textured_vertex,6> overlay;
     bool drain_checked{};
 };
 int main(int argc,char** argv) {
     try {
-        dreamrender::window_config config;config.title="Textured triangle smoke";config.name="triangle-smoke";
+        auroreengine::window_config config;config.title="Textured triangle smoke";config.name="triangle-smoke";
         config.width=128;config.height=128;config.headless=true;config.headless_frames=8;
         config.headless_output_format="{:05d}.bmp";
         config.headless_output_dir=argc>1?std::filesystem::path(argv[1]):std::filesystem::temp_directory_path()/"aurore-triangle-smoke";
         config.sampleCount=vk::SampleCountFlagBits::e1;
-        dreamrender::window window{config};window.init();
+        auroreengine::window window{config};window.init();
         // set_phase transfers ownership to the window.
         window.set_phase(new geometry_phase(&window));window.loop();window.waitIdle();
         std::ifstream file(config.headless_output_dir/"00007.bmp",std::ios::binary);

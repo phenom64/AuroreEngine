@@ -21,7 +21,7 @@ module;
 #include <variant>
 #include <vector>
 
-module dreamrender;
+module auroreengine;
 
 import :debug;
 import :resource_loader;
@@ -34,7 +34,7 @@ import spdlog;
 import vulkan_hpp;
 import vma;
 
-namespace dreamrender {
+namespace auroreengine {
 
     constexpr unsigned int safe_size = 256;
 

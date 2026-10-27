@@ -8,7 +8,7 @@ calls keep their default coordinate and colour behavior.
 imageRenderer.setAllocator(allocator); // once, before prepare/drawing
 imageRenderer.prepare(frameCount);
 
-std::array<dreamrender::image_renderer::textured_vertex, 3> vertices{{
+std::array<auroreengine::image_renderer::textured_vertex, 3> vertices{{
     {{0.25f, 0.25f, 0.5f, 1.0f}, {0.0f, 0.0f}, {1, 1, 1, 1}},
     {{0.75f, 0.25f, 0.5f, 1.0f}, {1.0f, 0.0f}, {1, 1, 1, 1}},
     {{0.25f, 0.75f, 0.5f, 1.0f}, {0.0f, 1.0f}, {1, 1, 1, 1}},
@@ -61,7 +61,7 @@ the queue mutex would prevent workers from finishing their submissions.
 
 ## Rendering smoke
 
-Configure `-DDREAMS_BUILD_RENDER_TESTS=ON` and explicitly build
+Configure `-DAUROREENGINE_BUILD_RENDER_TESTS=ON` and explicitly build
 `aurore_textured_triangles_smoke`. The target is excluded from the default build
 and requires a functional Vulkan driver. Run it with a writable output directory:
 

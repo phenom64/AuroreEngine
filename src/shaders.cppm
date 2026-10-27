@@ -5,11 +5,11 @@
  */
 module;
 
-export module dreamrender:shaders;
+export module auroreengine:shaders;
 
 import vulkan_hpp;
 
-export namespace dreamrender::shaders {
+export namespace auroreengine::shaders {
 
 namespace font_renderer {
     vk::UniqueShaderModule vert(vk::Device device);

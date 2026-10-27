@@ -7,6 +7,7 @@ layout(push_constant) uniform TriangleParams {
     layout(offset=48) vec4 colors[3];
     layout(offset=96) vec2 uvs[3];
     layout(offset=120) uint index;
+    layout(offset=124) uint encoding;
 } params;
 void main() {
     vec4 position=params.positions[gl_VertexIndex];

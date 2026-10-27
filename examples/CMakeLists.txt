@@ -13,7 +13,7 @@ endif()
 foreach(EXAMPLE ${EXAMPLES})
   add_executable(${EXAMPLE} ${EXAMPLE}.cpp)
   target_compile_features(${EXAMPLE} PRIVATE cxx_std_23)
-  target_link_libraries(${EXAMPLE} PRIVATE dreams::dreamrender)
+  target_link_libraries(${EXAMPLE} PRIVATE auroreengine::auroreengine)
   target_compile_options(${EXAMPLE} PRIVATE --embed-dir=${CMAKE_CURRENT_SOURCE_DIR})
 endforeach()
 

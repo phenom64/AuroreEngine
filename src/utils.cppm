@@ -29,12 +29,12 @@ module;
 #include <unistd.h>
 #endif
 
-export module dreamrender:utils;
+export module auroreengine:utils;
 
 import :debug;
 import vulkan_hpp;
 
-namespace dreamrender {
+namespace auroreengine {
 
 export template<std::array src, typename ToType, typename FromType = typename decltype(src)::value_type>
 constexpr auto convert() requires (std::integral<FromType> && std::integral<ToType>) {
@@ -112,7 +112,7 @@ export UniquePipelineMap createPipelines(
     UniquePipelineMap pipelines;
     for (size_t i = 0; i < renderPasses.size(); ++i)
     {
-        dreamrender::debugName(device, result.value[i].get(), debugName);
+        auroreengine::debugName(device, result.value[i].get(), debugName);
         pipelines[renderPasses[i]] = std::move(result.value[i]);
     }
     return pipelines;

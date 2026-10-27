@@ -12,7 +12,7 @@ module;
 #include <vector>
 #include <algorithm>
 
-export module dreamrender:gui_renderer;
+export module auroreengine:gui_renderer;
 
 import :components.font_renderer;
 import :components.image_renderer;
@@ -21,7 +21,7 @@ import :components.simple_renderer;
 import glm;
 import vulkan_hpp;
 
-namespace dreamrender {
+namespace auroreengine {
 
 export class gui_renderer {
     public:
@@ -130,7 +130,7 @@ export class gui_renderer {
             bool centerH = false, bool centerV = false)
         {
             if(centerH || centerV) {
-                glm::vec2 size = measure_text(text, scale);
+                glm::vec2 size = measure_text(text, scale * 0.5f);
                 if(centerH)
                     x -= size.x / 2.0f;
                 if(centerV)
@@ -139,6 +139,22 @@ export class gui_renderer {
             apply_view();
             font_renderer->renderText(commandBuffer, frame, renderPass, text, x, y,
                 scale*effective_text_scale(), color*text_color*this->color);
+        }
+        // Pixel font sizes and a baseline anchor avoid guessed line-height
+        // multipliers. Coordinates use framebuffer pixels; no extra typography scale.
+        void draw_text_pixels(std::string_view text,float x,float baseline,float pixels,
+            glm::vec4 tint=glm::vec4(1),float shadow=0.65f,float glow=0.0f,bool centered=false,glm::vec3 opacity_gradient=glm::vec3(1)) {
+            const float scale=pixels/static_cast<float>(frame_size.height)*font_renderer->emScale();
+            float nx=x/static_cast<float>(frame_size.width);
+            if(centered) nx-=font_renderer->measureText(text,scale*0.5f).x*0.5f;
+            const float ny=(baseline-pixels*font_renderer->baselineEm())/static_cast<float>(frame_size.height);
+            apply_view();
+            const bool fading=opacity_gradient!=glm::vec3(1);
+            const glm::vec4 bounds=fading?glm::vec4(nx*frame_size.width,nx*frame_size.width+font_renderer->measureText(text,scale*0.5f).x*frame_size.width,0.172f,0.438f):glm::vec4(0);
+            font_renderer->renderText(commandBuffer,frame,renderPass,text,nx,ny,scale,tint*text_color*color,shadow,glow,bounds,glm::vec4(opacity_gradient,0.812f));
+        }
+        float text_width_pixels(std::string_view text,float pixels) const {
+            return font_renderer->measureText(text,pixels/static_cast<float>(frame_size.height)*font_renderer->emScale()*0.5f).x*frame_size.width;
         }
         glm::vec2 measure_text(std::string_view text, float scale) const {
             return font_renderer->measureText(text, scale*effective_text_scale());
@@ -154,18 +170,21 @@ export class gui_renderer {
         // UVs, vertex tint, optional additive blending and depth testing.
         // Depth testing requires a depth attachment in the selected render pass.
         void draw_textured_triangles(const texture& image,
-            std::span<const dreamrender::image_renderer::textured_vertex> vertices,
+            std::span<const auroreengine::image_renderer::textured_vertex> vertices,
             bool additive=false,bool depth=false) {
             apply_view();
             image_renderer->renderTexturedTriangles(commandBuffer,frame,renderPass,image,vertices,color,additive,depth);
         }
         void draw_textured_triangles(vk::ImageView image,
-            std::span<const dreamrender::image_renderer::textured_vertex> vertices,
+            std::span<const auroreengine::image_renderer::textured_vertex> vertices,
             bool additive=false,bool depth=false) {
             apply_view();
             image_renderer->renderTexturedTriangles(commandBuffer,frame,renderPass,image,vertices,color,additive,depth);
         }
 
+        void draw_glass_frame(float x,float y,float width,float height,float opacity=1) {
+            apply_view();image_renderer->renderGlassFrame(commandBuffer,frame,renderPass,x,y,width,height,opacity);
+        }
         void draw_image_a(const texture& texture, float x, float y, float scaleX = 1.0f, float scaleY = 1.0f,
             glm::vec4 color = glm::vec4(1.0, 1.0, 1.0, 1.0), bool center = true)
         {

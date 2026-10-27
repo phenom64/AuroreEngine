@@ -13,8 +13,8 @@
       "binaryDir": "${sourceDir}/build/default",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
-        "DREAMS_BUILD_EXAMPLES": "OFF",
-        "DREAMS_FIND_PACKAGES": "ON"
+        "AUROREENGINE_BUILD_EXAMPLES": "OFF",
+        "AUROREENGINE_FIND_PACKAGES": "ON"
       }
     },
     {
@@ -25,7 +25,7 @@
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
         "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
-        "DREAMS_BUILD_EXAMPLES": "ON"
+        "AUROREENGINE_BUILD_EXAMPLES": "ON"
       }
     },
     {
@@ -52,7 +52,7 @@
       "binaryDir": "${sourceDir}/build/windows-vcpkg-dev",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
-        "DREAMS_BUILD_EXAMPLES": "ON"
+        "AUROREENGINE_BUILD_EXAMPLES": "ON"
       }
     }
   ],

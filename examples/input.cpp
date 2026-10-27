@@ -2,7 +2,7 @@
 #include <cstdint>
 #include <vector>
 
-import dreamrender;
+import auroreengine;
 import glm;
 import sdl2;
 import spdlog;
@@ -17,9 +17,9 @@ constexpr char example_image_data[] = {
 constexpr std::array<uint8_t, sizeof(example_image_data)> example_image =
     std::bit_cast<std::array<uint8_t, sizeof(example_image_data)>>(example_image_data);
 
-class simple_phase : public dreamrender::phase, public input::keyboard_handler {
+class simple_phase : public auroreengine::phase, public input::keyboard_handler {
     public:
-        simple_phase(dreamrender::window* win) : dreamrender::phase(win),
+        simple_phase(auroreengine::window* win) : auroreengine::phase(win),
             fontRenderer{"/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf", 64, device, allocator, win->swapchainExtent, win->gpuFeatures},
             imageRenderer(device, win->swapchainExtent, win->gpuFeatures),
             simpleRenderer(device, allocator, win->swapchainExtent, win->gpuFeatures) {}
@@ -27,10 +27,10 @@ class simple_phase : public dreamrender::phase, public input::keyboard_handler {
         vk::UniqueRenderPass renderPass;
         std::vector<vk::UniqueFramebuffer> framebuffers;
 
-        dreamrender::texture texture{device, allocator};
-        dreamrender::font_renderer fontRenderer;
-        dreamrender::image_renderer imageRenderer;
-        dreamrender::simple_renderer simpleRenderer;
+        auroreengine::texture texture{device, allocator};
+        auroreengine::font_renderer fontRenderer;
+        auroreengine::image_renderer imageRenderer;
+        auroreengine::simple_renderer simpleRenderer;
 
         void preload() override {
             phase::preload();
@@ -48,7 +48,7 @@ class simple_phase : public dreamrender::phase, public input::keyboard_handler {
             add_task(fontRenderer.preload(loader, {renderPass.get()}, win->config.sampleCount));
             imageRenderer.preload({renderPass.get()}, win->config.sampleCount);
             simpleRenderer.preload({renderPass.get()}, win->config.sampleCount);
-            add_task(loader->loadTexture(&texture, dreamrender::LoadDataView{example_image, "PNG"}));
+            add_task(loader->loadTexture(&texture, auroreengine::LoadDataView{example_image, "PNG"}));
         }
         void prepare(std::vector<vk::Image> swapchainImages, std::vector<vk::ImageView> swapchainViews) override {
             phase::prepare(swapchainImages, swapchainViews);
@@ -76,15 +76,15 @@ class simple_phase : public dreamrender::phase, public input::keyboard_handler {
             commandBuffer.setViewport(0, viewport);
             commandBuffer.setScissor(0, scissor);
 
-            dreamrender::gui_renderer gui(commandBuffer, frame, renderPass.get(), win->swapchainExtent, &fontRenderer, &imageRenderer, &simpleRenderer);
+            auroreengine::gui_renderer gui(commandBuffer, frame, renderPass.get(), win->swapchainExtent, &fontRenderer, &imageRenderer, &simpleRenderer);
             gui.draw_text("Hello World!", 0.0f, 0.0f, 0.1f);
             gui.draw_image_sized(texture, x-0.25f, y-0.25f, gui.frame_size.width/2, gui.frame_size.height/2);
             gui.draw_quad(std::array{
-                dreamrender::simple_renderer::vertex_data{{0.75f, 0.0f}, {0.2f, 0.2f, 0.2f, 0.2f}, {0.0f, 0.0f}},
-                dreamrender::simple_renderer::vertex_data{{0.75f, 1.0f}, {0.2f, 0.2f, 0.2f, 0.2f}, {0.0f, 1.0f}},
-                dreamrender::simple_renderer::vertex_data{{0.9f, 0.0f}, {0.0f, 0.0f, 0.0f, 0.0f}, {1.0f, 0.0f}},
-                dreamrender::simple_renderer::vertex_data{{0.9f, 1.0f}, {0.0f, 0.0f, 0.0f, 0.0f}, {1.0f, 1.0f}},
-            }, dreamrender::simple_renderer::params{
+                auroreengine::simple_renderer::vertex_data{{0.75f, 0.0f}, {0.2f, 0.2f, 0.2f, 0.2f}, {0.0f, 0.0f}},
+                auroreengine::simple_renderer::vertex_data{{0.75f, 1.0f}, {0.2f, 0.2f, 0.2f, 0.2f}, {0.0f, 1.0f}},
+                auroreengine::simple_renderer::vertex_data{{0.9f, 0.0f}, {0.0f, 0.0f, 0.0f, 0.0f}, {1.0f, 0.0f}},
+                auroreengine::simple_renderer::vertex_data{{0.9f, 1.0f}, {0.0f, 0.0f, 0.0f, 0.0f}, {1.0f, 1.0f}},
+            }, auroreengine::simple_renderer::params{
                 std::array{
                     glm::vec2{0.0f, 0.1f},
                     glm::vec2{0.0f, 0.0f},
@@ -124,11 +124,11 @@ class simple_phase : public dreamrender::phase, public input::keyboard_handler {
 int main() {
     spdlog::set_level(spdlog::level::debug);
 
-    dreamrender::window_config config;
+    auroreengine::window_config config;
     config.title = "Simple Example";
     config.name = "simple-example";
 
-    dreamrender::window window{config};
+    auroreengine::window window{config};
     window.init();
     auto* phase = new simple_phase(&window);
     window.set_phase(phase, phase);

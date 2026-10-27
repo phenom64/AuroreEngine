@@ -8,12 +8,12 @@ module;
 #include <array>
 #include <cstdint>
 
-module dreamrender;
+module auroreengine;
 
 import :utils;
 import vulkan_hpp;
 
-namespace dreamrender::shaders {
+namespace auroreengine::shaders {
 
 namespace font_renderer {
     #pragma clang diagnostic push

@@ -9,14 +9,14 @@ module;
 #include <future>
 #include <vector>
 
-export module dreamrender:phase;
+export module auroreengine:phase;
 
 import :resource_loader;
 
 import vulkan_hpp;
 import vma;
 
-namespace dreamrender {
+namespace auroreengine {
 
 export class window;
 

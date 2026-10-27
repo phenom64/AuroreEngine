@@ -10,7 +10,7 @@ module;
 #include <memory>
 #include <string>
 
-export module dreamrender:texture;
+export module auroreengine:texture;
 
 import :debug;
 import :utils;
@@ -20,7 +20,7 @@ import vma;
 
 import spdlog;
 
-namespace dreamrender {
+namespace auroreengine {
 
 export struct texture
 {
@@ -36,6 +36,7 @@ export struct texture
             sampleCount, vk::ImageTiling::eOptimal,
             usage | (transfer?vk::ImageUsageFlagBits::eTransferDst:vk::ImageUsageFlagBits{}),
             vk::SharingMode::eExclusive);
+        if(aspects==vk::ImageAspectFlagBits::eColor && (format==vk::Format::eR8G8B8A8Unorm||format==vk::Format::eR8G8B8A8Srgb||format==vk::Format::eB8G8R8A8Unorm||format==vk::Format::eB8G8R8A8Srgb)) image_info.flags|=vk::ImageCreateFlagBits::eMutableFormat;
         vma::AllocationCreateInfo alloc_info({}, vma::MemoryUsage::eGpuOnly);
         std::tie(image, allocation) = allocator.createImage(image_info, alloc_info);
 
@@ -67,6 +68,9 @@ export struct texture
             vk::ComponentMapping(), vk::ImageSubresourceRange(aspects, 0, 1, 0, 1));
     }
 
+    vk::UniqueImageView create_view(vk::Format format) const {
+        auto info=view_info;info.format=format;return device.createImageViewUnique(info);
+    }
     texture(texture&) = delete;
     texture(texture&& other)
         : device(other.device), allocator(other.allocator), image(other.image), allocation(other.allocation),

@@ -21,7 +21,7 @@ module;
 #include <variant>
 #include <version>
 
-export module dreamrender:resource_loader;
+export module auroreengine:resource_loader;
 
 import :texture;
 import :model;
@@ -31,7 +31,7 @@ import spdlog;
 import vulkan_hpp;
 import vma;
 
-namespace dreamrender {
+namespace auroreengine {
 
 class texture;
 class model;
