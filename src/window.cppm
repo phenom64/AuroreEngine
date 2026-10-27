@@ -880,7 +880,8 @@ export class window
 
             auto vkGetInstanceProcAddr = reinterpret_cast<PFN_vkGetInstanceProcAddr>(sdl::vk::GetVkGetInstanceProcAddr());
             if(!vkGetInstanceProcAddr) {
-                static vk::detail::DynamicLoader dl;
+                const auto* library = std::getenv("AUROREENGINE_VULKAN_LIBRARY");
+                static vk::detail::DynamicLoader dl(library ? library : "");
                 vkGetInstanceProcAddr = dl.getProcAddress<PFN_vkGetInstanceProcAddr>("vkGetInstanceProcAddr");
             }
             if(!vkGetInstanceProcAddr) {
@@ -924,10 +925,11 @@ export class window
                 std::ranges::copy(sdlExtensions, std::back_inserter(extensions));
             }
 
-            #if defined(__APPLE__)
-            // Enable portability enumeration for MoltenVK
-            extensions.push_back(vk::KHRPortabilityEnumerationExtensionName);
-            #endif
+            const auto instanceExtensions = vk::enumerateInstanceExtensionProperties();
+            const bool portabilityEnumeration = std::ranges::any_of(instanceExtensions, [](const auto& extension) {
+                return std::string_view{extension.extensionName} == vk::KHRPortabilityEnumerationExtensionName;
+            });
+            if(portabilityEnumeration) extensions.push_back(vk::KHRPortabilityEnumerationExtensionName);
 
             spdlog::debug("Using extensions: {}", fmt::join(extensions, ", "));
 
@@ -937,14 +939,12 @@ export class window
                 .setPEngineName("auroreengine")
                 .setEngineVersion(1)
                 .setApiVersion(vk::makeApiVersion(0, 1, 2, 0));
-            auto const inst_info = vk::InstanceCreateInfo()
+            auto inst_info = vk::InstanceCreateInfo()
                 .setPApplicationInfo(&app)
                 .setPEnabledLayerNames(layers)
                 .setPEnabledExtensionNames(extensions)
-                #if defined(__APPLE__)
-                .setFlags(vk::InstanceCreateFlagBits::eEnumeratePortabilityKHR)
-                #endif
                 ;
+            if(portabilityEnumeration) inst_info.setFlags(vk::InstanceCreateFlagBits::eEnumeratePortabilityKHR);
             instance = vk::createInstanceUnique(inst_info);
             VULKAN_HPP_DEFAULT_DISPATCHER.init(*instance);
 
@@ -1137,9 +1137,10 @@ export class window
             if(!config.headless && !config.workaround_no_swapchain) {
                 deviceExtensions.push_back(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
             }
-            #if defined(__APPLE__)
-            deviceExtensions.push_back("VK_KHR_portability_subset");
-            #endif
+            const auto availableDeviceExtensions = physicalDevice.enumerateDeviceExtensionProperties();
+            if(std::ranges::any_of(availableDeviceExtensions, [](const auto& extension) {
+                return std::string_view{extension.extensionName} == "VK_KHR_portability_subset";
+            })) deviceExtensions.push_back("VK_KHR_portability_subset");
             vk::DeviceCreateInfo device_info = vk::DeviceCreateInfo()
                 .setQueueCreateInfos(queueInfos)
                 .setPEnabledLayerNames(layers)
