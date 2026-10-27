@@ -22,11 +22,21 @@ This engine is designed for simplicity, portability (really important) and ease 
 *   **CMake-Friendly:** Designed to be easily included in larger projects using CMake's `FetchContent`.
 *   **Headless Rendering:** Supports rendering without a visible window, useful for testing or server-side tasks.
 
+## Current desktop work
+
+The engine exposes the `auroreengine` module, namespace and CMake target. Recent
+desktop work includes padded glyph-atlas shadow and selection glow, retained and
+batched textured geometry, lazy blur allocations and resource-upload improvements.
+The optional textured-triangles smoke test exercises rendering and upload behavior;
+see [textured geometry](docs/textured-geometry.md). These implementation changes
+do not establish a frame-rate target or cross-platform runtime coverage. OpenGL ES
+and handheld support remain future work.
+
 ## Core Concepts
 
 The engine's architecture is built around a few key classes:
-*   `dreamrender::window`: The main entry point. It initializes SDL2 and Vulkan, manages the window, and runs the main event loop.
-*   `dreamrender::phase`: A base class representing a distinct state or screen in your application (e.g., main menu, game level, settings screen). You implement your application logic by subclassing `phase`.
+*   `auroreengine::window`: The main entry point. It initializes SDL2 and Vulkan, manages the window, and runs the main event loop.
+*   `auroreengine::phase`: A base class representing a distinct state or screen in your application (e.g., main menu, game level, settings screen). You implement your application logic by subclassing `phase`.
 *   **Renderers**: The engine provides specialized renderer classes that you can use within your `phase` to draw content to the screen.
 
 ## Using AuroreEngine in Your Project
@@ -39,8 +49,8 @@ The recommended way to use AuroreEngine is via `FetchContent` in your project's 
 include(FetchContent)
 
 # Set options to let AuroreEngine know you are providing the dependencies
-set(DREAMS_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
-set(DREAMS_FIND_PACKAGES OFF CACHE BOOL "" FORCE)
+set(AUROREENGINE_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(AUROREENGINE_FIND_PACKAGES OFF CACHE BOOL "" FORCE)
 
 FetchContent_Declare(
   AuroreEngine
@@ -56,7 +66,7 @@ FetchContent_MakeAvailable(AuroreEngine)
 # ... and so on
 
 # Link your executable against the engine
-target_link_libraries(YourApp PRIVATE dreams::dreamrender)
+target_link_libraries(YourApp PRIVATE auroreengine::auroreengine)
 ```
 
 ### 2. Basic Application Structure
@@ -64,13 +74,13 @@ target_link_libraries(YourApp PRIVATE dreams::dreamrender)
 Here is a minimal example of an AuroreEngine application:
 
 ```cpp
-import dreamrender;
+import auroreengine;
 import vulkan_hpp;
 
 // 1. Define your application's main screen or state
-class MyPhase : public dreamrender::phase {
+class MyPhase : public auroreengine::phase {
 public:
-    MyPhase(dreamrender::window* win) : dreamrender::phase(win) {}
+    MyPhase(auroreengine::window* win) : auroreengine::phase(win) {}
 
     // Member variables for render passes, framebuffers, etc.
     vk::UniqueRenderPass renderPass;
@@ -109,12 +119,12 @@ public:
 // 5. Main entry point
 int main() {
     // Configure the window
-    dreamrender::window_config config;
+    auroreengine::window_config config;
     config.title = "My App";
     config.name = "my-app";
 
     // Create and run the window
-    dreamrender::window window{config};
+    auroreengine::window window{config};
     window.init();
     window.set_phase(new MyPhase(&window));
     window.loop();

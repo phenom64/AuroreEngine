@@ -15,9 +15,16 @@ layout(push_constant) uniform ImageParams
     mat4 matrix;
     vec4 color;
     uint index;
+    uint encoding;
 } params;
+
+vec3 linear_to_srgb(vec3 c) {
+    return mix(1.055*pow(max(c,vec3(0)),vec3(1.0/2.4))-0.055,c*12.92,lessThanEqual(c,vec3(0.0031308)));
+}
 
 void main()
 {
-	outColor = texture(tex, inTexCoord) * params.color;
+	vec4 sampleColor=texture(tex, inTexCoord);
+    if(params.encoding!=0u) sampleColor.rgb=linear_to_srgb(sampleColor.rgb);
+    outColor=sampleColor*params.color;
 }

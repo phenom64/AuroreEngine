@@ -13,7 +13,7 @@ module;
 #include <memory>
 #include <span>
 
-export module dreamrender:model;
+export module auroreengine:model;
 
 import glm;
 import vulkan_hpp;
@@ -21,7 +21,7 @@ import vma;
 
 import :utils;
 
-namespace dreamrender {
+namespace auroreengine {
 
 export struct vertex_data
 {

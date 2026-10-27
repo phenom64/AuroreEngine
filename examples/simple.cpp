@@ -1,12 +1,12 @@
 #include <vector>
 
-import dreamrender;
+import auroreengine;
 import spdlog;
 import vulkan_hpp;
 
-class simple_phase : public dreamrender::phase {
+class simple_phase : public auroreengine::phase {
     public:
-        simple_phase(dreamrender::window* win) : dreamrender::phase(win) {}
+        simple_phase(auroreengine::window* win) : auroreengine::phase(win) {}
 
         vk::UniqueRenderPass renderPass;
         std::vector<vk::UniqueFramebuffer> framebuffers;
@@ -45,18 +45,18 @@ class simple_phase : public dreamrender::phase {
 
             vk::PipelineStageFlags waitStages = vk::PipelineStageFlagBits::eColorAttachmentOutput;
             vk::SubmitInfo submitInfo(1, &imageAvailable, &waitStages, 1, &commandBuffer, 1, &renderFinished);
-            graphicsQueue.submit(submitInfo, fence);
+            submit_graphics(submitInfo, fence);
         }
 };
 
 int main() {
     spdlog::set_level(spdlog::level::debug);
 
-    dreamrender::window_config config;
+    auroreengine::window_config config;
     config.title = "Simple Example";
     config.name = "simple-example";
 
-    dreamrender::window window{config};
+    auroreengine::window window{config};
     window.init();
     window.set_phase(new simple_phase(&window));
     window.loop();

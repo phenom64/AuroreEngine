@@ -1,19 +1,19 @@
 #include <vector>
 
-import dreamrender;
+import auroreengine;
 import glm;
 import spdlog;
 import vulkan_hpp;
 
-class simple_phase : public dreamrender::phase {
+class simple_phase : public auroreengine::phase {
     public:
-        simple_phase(dreamrender::window* win) : dreamrender::phase(win),
+        simple_phase(auroreengine::window* win) : auroreengine::phase(win),
             simpleRenderer(device, allocator, win->swapchainExtent, win->gpuFeatures) {}
 
         vk::UniqueRenderPass renderPass;
         std::vector<vk::UniqueFramebuffer> framebuffers;
 
-        dreamrender::simple_renderer simpleRenderer;
+        auroreengine::simple_renderer simpleRenderer;
 
         void preload() override {
             phase::preload();
@@ -53,11 +53,11 @@ class simple_phase : public dreamrender::phase {
             commandBuffer.setScissor(0, scissor);
 
             simpleRenderer.renderQuad(commandBuffer, frame, renderPass.get(), std::array{
-                dreamrender::simple_renderer::vertex_data{{0.75f, 0.0f}, {0.2f, 0.2f, 0.2f, 0.2f}, {0.0f, 0.0f}},
-                dreamrender::simple_renderer::vertex_data{{0.75f, 1.0f}, {0.2f, 0.2f, 0.2f, 0.2f}, {0.0f, 1.0f}},
-                dreamrender::simple_renderer::vertex_data{{0.9f, 0.0f}, {0.0f, 0.0f, 0.0f, 0.0f}, {1.0f, 0.0f}},
-                dreamrender::simple_renderer::vertex_data{{0.9f, 1.0f}, {0.0f, 0.0f, 0.0f, 0.0f}, {1.0f, 1.0f}},
-            }, dreamrender::simple_renderer::params{
+                auroreengine::simple_renderer::vertex_data{{0.75f, 0.0f}, {0.2f, 0.2f, 0.2f, 0.2f}, {0.0f, 0.0f}},
+                auroreengine::simple_renderer::vertex_data{{0.75f, 1.0f}, {0.2f, 0.2f, 0.2f, 0.2f}, {0.0f, 1.0f}},
+                auroreengine::simple_renderer::vertex_data{{0.9f, 0.0f}, {0.0f, 0.0f, 0.0f, 0.0f}, {1.0f, 0.0f}},
+                auroreengine::simple_renderer::vertex_data{{0.9f, 1.0f}, {0.0f, 0.0f, 0.0f, 0.0f}, {1.0f, 1.0f}},
+            }, auroreengine::simple_renderer::params{
                 std::array{
                     glm::vec2{0.0f, 0.1f},
                     glm::vec2{0.0f, 0.0f},
@@ -66,7 +66,7 @@ class simple_phase : public dreamrender::phase {
                 }
             });
             simpleRenderer.renderRect(commandBuffer, frame, renderPass.get(), glm::vec2{0.1f, 0.1f}, glm::vec2{0.25f, 0.2f}, glm::vec4{1.0f, 0.0f, 0.0f, 1.0f},
-                dreamrender::simple_renderer::params{
+                auroreengine::simple_renderer::params{
                     {}, {0.1f, 0.3f, 0.5f, 0.7f}
                 });
 
@@ -77,18 +77,18 @@ class simple_phase : public dreamrender::phase {
 
             vk::PipelineStageFlags waitStages = vk::PipelineStageFlagBits::eColorAttachmentOutput;
             vk::SubmitInfo submitInfo(1, &imageAvailable, &waitStages, 1, &commandBuffer, 1, &renderFinished);
-            graphicsQueue.submit(submitInfo, fence);
+            submit_graphics(submitInfo, fence);
         }
 };
 
 int main() {
     spdlog::set_level(spdlog::level::debug);
 
-    dreamrender::window_config config;
+    auroreengine::window_config config;
     config.title = "Simple Example";
     config.name = "simple-example";
 
-    dreamrender::window window{config};
+    auroreengine::window window{config};
     window.init();
     window.set_phase(new simple_phase(&window));
     window.loop();

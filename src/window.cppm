@@ -56,7 +56,7 @@ module;
 #include <vulkan/vulkan_core.h>
 #include <vulkan/vulkan_hpp_macros.hpp>
 
-export module dreamrender:window;
+export module auroreengine:window;
 
 import :resource_loader;
 import :phase;
@@ -67,7 +67,7 @@ import sdl2;
 import vulkan_hpp;
 import vma;
 
-namespace dreamrender {
+namespace auroreengine {
 
 static vk::Bool32 debugCallback(
     VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
@@ -163,28 +163,28 @@ static std::filesystem::path env_path(const char* name) {
 static std::filesystem::path get_cache_dir() {
 #if defined(_WIN32)
     if(auto path = env_path("LOCALAPPDATA"); !path.empty()) {
-        return path / "DreamRender" / "Cache";
+        return path / "AuroreEngine" / "Cache";
     }
     if(auto path = env_path("APPDATA"); !path.empty()) {
-        return path / "DreamRender" / "Cache";
+        return path / "AuroreEngine" / "Cache";
     }
 #elif defined(__APPLE__)
     if(auto path = env_path("HOME"); !path.empty()) {
-        return path / "Library" / "Caches" / "dreamrender";
+        return path / "Library" / "Caches" / "auroreengine";
     }
 #elif defined(__linux__)
     if(auto path = env_path("XDG_CACHE_HOME"); !path.empty()) {
-        return path / "dreamrender";
+        return path / "auroreengine";
     }
     if(auto path = env_path("HOME"); !path.empty()) {
-        return path / ".cache" / "dreamrender";
+        return path / ".cache" / "auroreengine";
     }
 #else
     if(auto path = env_path("HOME"); !path.empty()) {
-        return path / ".cache" / "dreamrender";
+        return path / ".cache" / "auroreengine";
     }
 #endif
-    return std::filesystem::temp_directory_path() / "dreamrender";
+    return std::filesystem::temp_directory_path() / "auroreengine";
 }
 
 static bool env_truthy(const char* name) {
@@ -206,7 +206,13 @@ export class window
 
             std::scoped_lock lock(renderLock);
 
+            // Drain uploads while their renderer-owned destinations are alive.
+            // Keep the loader itself alive until phase destructors finish:
+            // components may wait for their outstanding upload during teardown.
+            if(loader) loader->waitIdle();
+
             if(device) {
+                std::scoped_lock queueGuard(queueLock);
                 try {
                     device->waitIdle();
                 } catch(const std::exception& e) {
@@ -256,19 +262,19 @@ export class window
         }
 
         void init() {
-            if(const char* c = std::getenv("DREAMRENDER_HEADLESS")) {
+            if(const char* c = std::getenv("AUROREENGINE_HEADLESS")) {
                 std::string_view sv{c};
                 if(sv == "1") {
                     config.headless = true;
                 } else if(sv == "0") {
                     config.headless = false;
                 } else {
-                    spdlog::warn("Unknown value for DREAMRENDER_HEADLESS: \"{}\"", c);
+                    spdlog::warn("Unknown value for AUROREENGINE_HEADLESS: \"{}\"", c);
                 }
             }
             if(config.headless) {
                 sdl::SetHint("SDL_NO_SIGNAL_HANDLERS", "1");
-                if(const char* c = std::getenv("DREAMRENDER_HEADLESS_TERMINAL")) {
+                if(const char* c = std::getenv("AUROREENGINE_HEADLESS_TERMINAL")) {
                     std::string_view sv{c};
                     if(sv == "1") {
                         config.headless_terminal = true;
@@ -276,7 +282,7 @@ export class window
                     } else if(sv == "0") {
                         config.headless_terminal = false;
                     } else {
-                        spdlog::warn("Unknown value for DREAMRENDER_HEADLESS_TERMINAL: \"{}\"", c);
+                        spdlog::warn("Unknown value for AUROREENGINE_HEADLESS_TERMINAL: \"{}\"", c);
                     }
                 }
                 if(config.headless_terminal) {
@@ -295,22 +301,22 @@ export class window
                     static std::vector<char> buffer(32*1024*1024); // 32 MiB buffer, so it is smooth
                     std::setvbuf(stdout, buffer.data(), _IOFBF, buffer.size());
                 }
-                if(const char* c = std::getenv("DREAMRENDER_HEADLESS_OUTPUT_DIR")) {
+                if(const char* c = std::getenv("AUROREENGINE_HEADLESS_OUTPUT_DIR")) {
                     config.headless_output_dir = c;
                 }
-                if(const char* c = std::getenv("DREAMRENDER_HEADLESS_OUTPUT_PATTERN")) {
+                if(const char* c = std::getenv("AUROREENGINE_HEADLESS_OUTPUT_PATTERN")) {
                     config.headless_output_format = c;
                 }
-                if(const char* c = std::getenv("DREAMRENDER_HEADLESS_OUTPUT_QUALITY")) {
+                if(const char* c = std::getenv("AUROREENGINE_HEADLESS_OUTPUT_QUALITY")) {
                     config.headless_output_quality = std::stoi(c);
                 }
-                if(const char* c = std::getenv("DREAMRENDER_HEADLESS_WIDTH")) {
+                if(const char* c = std::getenv("AUROREENGINE_HEADLESS_WIDTH")) {
                     config.width = std::stoi(c);
                 }
-                if(const char* c = std::getenv("DREAMRENDER_HEADLESS_HEIGHT")) {
+                if(const char* c = std::getenv("AUROREENGINE_HEADLESS_HEIGHT")) {
                     config.height = std::stoi(c);
                 }
-                if(const char* c = std::getenv("DREAMRENDER_HEADLESS_FRAMES")) {
+                if(const char* c = std::getenv("AUROREENGINE_HEADLESS_FRAMES")) {
                     config.headless_frames = std::stoi(c);
                 }
                 if(!config.headless_output_dir.empty() &&
@@ -319,14 +325,14 @@ export class window
                     std::filesystem::create_directories(config.headless_output_dir);
                 }
             }
-            if(const char* c = std::getenv("DREAMRENDER_NO_SWAPCHAIN")) {
+            if(const char* c = std::getenv("AUROREENGINE_NO_SWAPCHAIN")) {
                 config.workaround_no_swapchain = (std::string_view{c} == "1");
             }
-            if(const char* c = std::getenv("DREAMRENDER_PROFILE_FRAMES")) {
+            if(const char* c = std::getenv("AUROREENGINE_PROFILE_FRAMES")) {
                 std::string_view sv{c};
                 config.profileFrames = sv == "1" || sv == "true" || sv == "TRUE";
             }
-            if(const char* c = std::getenv("DREAMRENDER_PROFILE_FRAME_INTERVAL")) {
+            if(const char* c = std::getenv("AUROREENGINE_PROFILE_FRAME_INTERVAL")) {
                 config.profileFrameInterval = std::max<uint64_t>(1, std::stoull(c));
             }
             static sdl::initializer sdl_init;
@@ -338,10 +344,27 @@ export class window
                 spdlog::debug("Initializing SDL input");
                 initInput();
             }
+            if(config.headless) {
+                if(const auto* audio = std::getenv("AUROREENGINE_HEADLESS_AUDIO"); audio && std::string_view(audio) == "1")
+                    initAudio();
+            }
             spdlog::debug("Initializing Vulkan");
             initVulkan();
             spdlog::debug("Window initialization complete");
         }
+        // Queue operations, rather than the entire render callback, own this
+        // mutex. A phase may drain uploads while preparing a new scene without
+        // preventing an upload worker from submitting its final transfer.
+        void submitGraphics(const vk::SubmitInfo& info, vk::Fence fence = {}) {
+            std::scoped_lock queueGuard(queueLock);
+            graphicsQueue.submit(info, fence);
+        }
+        void waitIdle() {
+            if(loader) loader->waitIdle();
+            std::scoped_lock queueGuard(queueLock);
+            if(device) device->waitIdle();
+        }
+
         void loop() {
             startTime = std::chrono::steady_clock::now();
             lastFrame = startTime;
@@ -437,7 +460,11 @@ export class window
                                 std::filesystem::path path = config.headless_output_dir / std::vformat(config.headless_output_format, std::make_format_args(totalFrameNumber));
                                 std::string ext = path.extension().string();
                                 if(ext == ".png") {
-                                    sdl::image::SavePNG(surface.get(), path.string().c_str());
+                                    auto temporary = path;
+                                    temporary += ".part";
+                                    if(sdl::image::SavePNG(surface.get(), temporary.string().c_str()) == 0)
+                                        std::filesystem::rename(temporary, path);
+                                    else spdlog::error("Failed to save headless PNG {}", path.string());
                                 } else if(ext == ".jpg" || ext == ".jpeg") {
                                     sdl::image::SaveJPG(surface.get(), path.string().c_str(), config.headless_output_quality);
                                 } else if(ext == ".bmp") {
@@ -468,7 +495,7 @@ export class window
 
                     vk::PipelineStageFlags waitStages = vk::PipelineStageFlagBits::eColorAttachmentOutput;
                     vk::SubmitInfo submitInfo(0, {}, {}, 1, &commandBuffer, 1, &imageAvailableSemaphores[currentFrame].get());
-                    graphicsQueue.submit(submitInfo, {}); // no fence here, we just don't give a shit anymore
+                    submitGraphics(submitInfo, {});
                     afterAcquire = std::chrono::steady_clock::now();
                 } else {
                     std::tie(r, imageIndex) = device->acquireNextImageKHR(swapchain.get(), UINT64_MAX, imageAvailableSemaphores[currentFrame].get());
@@ -521,11 +548,14 @@ export class window
 
                     vk::PipelineStageFlags waitStages = vk::PipelineStageFlagBits::eColorAttachmentOutput;
                     vk::SubmitInfo submitInfo(1, &renderFinishedSemaphores[currentFrame].get(), &waitStages, 1, &commandBuffer, 0, {});
-                    graphicsQueue.submit(submitInfo, headlessFences[imageIndex].get()); // we need this fence, or everything explodes
+                    submitGraphics(submitInfo, headlessFences[imageIndex].get());
                     afterPresent = std::chrono::steady_clock::now();
                 } else {
                     vk::PresentInfoKHR present_info(renderFinishedSemaphores[currentFrame].get(), swapchain.get(), imageIndex);
-                    r = presentQueue.presentKHR(present_info);
+                    {
+                        std::scoped_lock queueGuard(queueLock);
+                        r = presentQueue.presentKHR(present_info);
+                    }
                     if(r == vk::Result::eErrorOutOfDateKHR || r == vk::Result::eSuboptimalKHR) {
                         spdlog::debug("Present {} ; recreating swapchain", (r==vk::Result::eErrorOutOfDateKHR?"out-of-date":"suboptimal"));
                         recreateSwapchain();
@@ -575,6 +605,7 @@ export class window
 
         void recreateSwapchain(bool recreate = true) {
             std::scoped_lock lock(renderLock);
+            std::scoped_lock queueGuard(queueLock);
             spdlog::debug("(Re)Creating swapchain");
 
             if(config.headless || config.workaround_no_swapchain) {
@@ -658,6 +689,7 @@ export class window
             auto tPrepare = std::chrono::high_resolution_clock::now();
             spdlog::debug("Preparing phase: waitLoad");
             current_renderer->waitLoad(); // replace with loading screen
+            loader->waitIdle();
             auto tWaitLoad = std::chrono::high_resolution_clock::now();
             spdlog::debug("Preparing phase: init");
             current_renderer->init();
@@ -744,6 +776,7 @@ export class window
         bool audioInitialized = false;
         bool allocatorInitialized = false;
         std::recursive_mutex renderLock{};
+        std::recursive_mutex queueLock{};
 
         struct sdl_controller_closer {
             void operator()(sdl::GameController* ptr) const {
@@ -847,7 +880,8 @@ export class window
 
             auto vkGetInstanceProcAddr = reinterpret_cast<PFN_vkGetInstanceProcAddr>(sdl::vk::GetVkGetInstanceProcAddr());
             if(!vkGetInstanceProcAddr) {
-                static vk::detail::DynamicLoader dl;
+                const auto* library = std::getenv("AUROREENGINE_VULKAN_LIBRARY");
+                static vk::detail::DynamicLoader dl(library ? library : "");
                 vkGetInstanceProcAddr = dl.getProcAddress<PFN_vkGetInstanceProcAddr>("vkGetInstanceProcAddr");
             }
             if(!vkGetInstanceProcAddr) {
@@ -856,7 +890,7 @@ export class window
             VULKAN_HPP_DEFAULT_DISPATCHER.init(vkGetInstanceProcAddr);
             spdlog::debug("Initialized Vulkan dispatch loader");
 
-            bool validationEnabled = env_truthy("DREAMRENDER_VULKAN_VALIDATION") || env_truthy("OPENXMB_VULKAN_VALIDATION");
+            bool validationEnabled = env_truthy("AUROREENGINE_VULKAN_VALIDATION") || env_truthy("OPENXMB_VULKAN_VALIDATION");
 #if !defined(NDEBUG) && __linux__
             validationEnabled = true;
 #endif
@@ -891,27 +925,26 @@ export class window
                 std::ranges::copy(sdlExtensions, std::back_inserter(extensions));
             }
 
-            #if defined(__APPLE__)
-            // Enable portability enumeration for MoltenVK
-            extensions.push_back(vk::KHRPortabilityEnumerationExtensionName);
-            #endif
+            const auto instanceExtensions = vk::enumerateInstanceExtensionProperties();
+            const bool portabilityEnumeration = std::ranges::any_of(instanceExtensions, [](const auto& extension) {
+                return std::string_view{extension.extensionName} == vk::KHRPortabilityEnumerationExtensionName;
+            });
+            if(portabilityEnumeration) extensions.push_back(vk::KHRPortabilityEnumerationExtensionName);
 
             spdlog::debug("Using extensions: {}", fmt::join(extensions, ", "));
 
             auto const app = vk::ApplicationInfo()
                 .setPApplicationName(config.name.c_str())
                 .setApplicationVersion(config.version)
-                .setPEngineName("dreamrender")
+                .setPEngineName("auroreengine")
                 .setEngineVersion(1)
                 .setApiVersion(vk::makeApiVersion(0, 1, 2, 0));
-            auto const inst_info = vk::InstanceCreateInfo()
+            auto inst_info = vk::InstanceCreateInfo()
                 .setPApplicationInfo(&app)
                 .setPEnabledLayerNames(layers)
                 .setPEnabledExtensionNames(extensions)
-                #if defined(__APPLE__)
-                .setFlags(vk::InstanceCreateFlagBits::eEnumeratePortabilityKHR)
-                #endif
                 ;
+            if(portabilityEnumeration) inst_info.setFlags(vk::InstanceCreateFlagBits::eEnumeratePortabilityKHR);
             instance = vk::createInstanceUnique(inst_info);
             VULKAN_HPP_DEFAULT_DISPATCHER.init(*instance);
 
@@ -942,15 +975,15 @@ export class window
 
             const char* env;
             std::optional<unsigned int> device_index = config.device_index;
-            if(!device_index.has_value() && (env = std::getenv("DREAMRENDER_DEVICE_INDEX"))) {
+            if(!device_index.has_value() && (env = std::getenv("AUROREENGINE_DEVICE_INDEX"))) {
                 device_index = std::stoi(env);
             }
             std::optional<std::string> device_name = config.device_name;
-            if(!device_name.has_value() && (env = std::getenv("DREAMRENDER_DEVICE_NAME"))) {
+            if(!device_name.has_value() && (env = std::getenv("AUROREENGINE_DEVICE_NAME"))) {
                 device_name = env;
             }
             std::optional<std::string> device_uuid = config.device_uuid;
-            if(!device_uuid.has_value() && (env = std::getenv("DREAMRENDER_DEVICE_UUID"))) {
+            if(!device_uuid.has_value() && (env = std::getenv("AUROREENGINE_DEVICE_UUID"))) {
                 device_uuid = env;
             }
 
@@ -1073,7 +1106,7 @@ export class window
             auto featureChain = physicalDevice.getFeatures2<vk::PhysicalDeviceFeatures2, vk::PhysicalDeviceVulkan12Features>();
             auto supportedFeatures = featureChain.get<vk::PhysicalDeviceFeatures2>().features;
             auto supportedVulkan12Features = featureChain.get<vk::PhysicalDeviceVulkan12Features>();
-            if(std::getenv("DREAMRENDER_NO_FEATURES")) {
+            if(std::getenv("AUROREENGINE_NO_FEATURES")) {
                 spdlog::warn("Disabling all device features");
                 supportedFeatures = vk::PhysicalDeviceFeatures();
                 supportedVulkan12Features = vk::PhysicalDeviceVulkan12Features();
@@ -1104,9 +1137,10 @@ export class window
             if(!config.headless && !config.workaround_no_swapchain) {
                 deviceExtensions.push_back(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
             }
-            #if defined(__APPLE__)
-            deviceExtensions.push_back("VK_KHR_portability_subset");
-            #endif
+            const auto availableDeviceExtensions = physicalDevice.enumerateDeviceExtensionProperties();
+            if(std::ranges::any_of(availableDeviceExtensions, [](const auto& extension) {
+                return std::string_view{extension.extensionName} == "VK_KHR_portability_subset";
+            })) deviceExtensions.push_back("VK_KHR_portability_subset");
             vk::DeviceCreateInfo device_info = vk::DeviceCreateInfo()
                 .setQueueCreateInfos(queueInfos)
                 .setPEnabledLayerNames(layers)
@@ -1146,7 +1180,7 @@ export class window
             loader = std::make_unique<resource_loader>(device.get(), allocator,
                 queueFamilyIndices.graphicsFamily.value(),
                 queueFamilyIndices.graphicsFamily.value(),
-                std::vector<vk::Queue>{graphicsQueue});
+                std::vector<vk::Queue>{graphicsQueue}, queueLock);
 
             if(config.headless || config.workaround_no_swapchain) {
                 swapchainFormat = vk::SurfaceFormatKHR{

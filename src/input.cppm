@@ -7,7 +7,7 @@ module;
 
 #include <cstdint>
 
-export module dreamrender:input;
+export module auroreengine:input;
 
 import sdl2;
 

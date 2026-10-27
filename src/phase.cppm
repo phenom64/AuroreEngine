@@ -9,14 +9,14 @@ module;
 #include <future>
 #include <vector>
 
-export module dreamrender:phase;
+export module auroreengine:phase;
 
 import :resource_loader;
 
 import vulkan_hpp;
 import vma;
 
-namespace dreamrender {
+namespace auroreengine {
 
 export class window;
 
@@ -83,6 +83,9 @@ export class phase
         // Managed resources
         vk::UniqueCommandPool pool;
         std::vector<vk::CommandBuffer> commandBuffers;
+
+        // Externally synchronize submissions shared with resource-loader workers.
+        void submit_graphics(const vk::SubmitInfo& info, vk::Fence fence = {});
 
         // Utility functions
         std::vector<vk::UniqueFramebuffer> createFramebuffers(vk::RenderPass renderPass, const std::vector<vk::ImageView>& swapchainViews, vk::Extent2D extent) const {

@@ -4,14 +4,14 @@
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
 
-import dreamrender;
+import auroreengine;
 import sdl2;
 import spdlog;
 import vulkan_hpp;
 
-class simple_phase : public dreamrender::phase {
+class simple_phase : public auroreengine::phase {
     public:
-        simple_phase(dreamrender::window* win) : dreamrender::phase(win) {}
+        simple_phase(auroreengine::window* win) : auroreengine::phase(win) {}
 
         vk::UniqueRenderPass renderPass;
         std::vector<vk::UniqueFramebuffer> framebuffers;
@@ -50,14 +50,14 @@ class simple_phase : public dreamrender::phase {
 
             vk::PipelineStageFlags waitStages = vk::PipelineStageFlagBits::eColorAttachmentOutput;
             vk::SubmitInfo submitInfo(1, &imageAvailable, &waitStages, 1, &commandBuffer, 1, &renderFinished);
-            graphicsQueue.submit(submitInfo, fence);
+            submit_graphics(submitInfo, fence);
         }
 };
 
 int main() {
     spdlog::set_level(spdlog::level::debug);
 
-    dreamrender::window_config config;
+    auroreengine::window_config config;
     config.title = "Simple Example";
     config.name = "simple-example";
     {
@@ -74,7 +74,7 @@ int main() {
         config.sdl_hints[sdl::hints::video_x11_window_visualid] = std::to_string(visualInfo.visualid);
     }
 
-    dreamrender::window window{config};
+    auroreengine::window window{config};
     window.init();
     window.set_phase(new simple_phase(&window));
     window.loop();

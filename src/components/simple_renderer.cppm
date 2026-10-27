@@ -9,7 +9,7 @@ module;
 
 #include <iostream>
 
-export module dreamrender:components.simple_renderer;
+export module auroreengine:components.simple_renderer;
 
 import :shaders;
 import :texture;
@@ -19,7 +19,7 @@ import glm;
 import vulkan_hpp;
 import vma;
 
-namespace dreamrender {
+namespace auroreengine {
 
 
 export struct simple_params {

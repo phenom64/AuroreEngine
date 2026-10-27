@@ -6,11 +6,13 @@
 module;
 
 #include <cstdint>
+#include <span>
+#include <cmath>
 #include <string_view>
 #include <vector>
 #include <algorithm>
 
-export module dreamrender:gui_renderer;
+export module auroreengine:gui_renderer;
 
 import :components.font_renderer;
 import :components.image_renderer;
@@ -19,7 +21,7 @@ import :components.simple_renderer;
 import glm;
 import vulkan_hpp;
 
-namespace dreamrender {
+namespace auroreengine {
 
 export class gui_renderer {
     public:
@@ -34,6 +36,10 @@ export class gui_renderer {
 
         const vk::Extent2D frame_size;
         const double aspect_ratio;
+        // Per-context theme typography. Fresh contexts and reset() use neutral
+        // defaults so ordinary rectangles/images and existing callers are unchanged.
+        glm::vec4 text_color{1.0f};
+        float text_scale{1.0f};
 
         [[deprecated("ignores the color stack; use push_color_direct instead")]]
         void set_color(glm::vec4 color) {
@@ -124,17 +130,38 @@ export class gui_renderer {
             bool centerH = false, bool centerV = false)
         {
             if(centerH || centerV) {
-                glm::vec2 size = measure_text(text, scale);
+                glm::vec2 size = measure_text(text, scale * 0.5f);
                 if(centerH)
                     x -= size.x / 2.0f;
                 if(centerV)
                     y -= size.y / 2.0f;
             }
             apply_view();
-            font_renderer->renderText(commandBuffer, frame, renderPass, text, x, y, scale, color*this->color);
+            font_renderer->renderText(commandBuffer, frame, renderPass, text, x, y,
+                scale*effective_text_scale(), color*text_color*this->color);
+        }
+        // Pixel font sizes and a baseline anchor avoid guessed line-height
+        // multipliers. Coordinates use framebuffer pixels; no extra typography scale.
+        void draw_text_pixels(std::string_view text,float x,float baseline,float pixels,
+            glm::vec4 tint=glm::vec4(1),float shadow=0.65f,float glow=0.0f,bool centered=false,glm::vec3 opacity_gradient=glm::vec3(1)) {
+            const float scale=pixels/static_cast<float>(frame_size.height)*font_renderer->emScale();
+            float nx=x/static_cast<float>(frame_size.width);
+            if(centered) nx-=font_renderer->measureText(text,scale*0.5f).x*0.5f;
+            const float ny=(baseline-pixels*font_renderer->baselineEm())/static_cast<float>(frame_size.height);
+            apply_view();
+            const bool fading=opacity_gradient!=glm::vec3(1);
+            const glm::vec4 bounds=fading?glm::vec4(nx*frame_size.width,nx*frame_size.width+font_renderer->measureText(text,scale*0.5f).x*frame_size.width,0.172f,0.438f):glm::vec4(0);
+            font_renderer->renderText(commandBuffer,frame,renderPass,text,nx,ny,scale,tint*text_color*color,shadow,glow,bounds,glm::vec4(opacity_gradient,0.812f));
+        }
+        float text_width_pixels(std::string_view text,float pixels) const {
+            return font_renderer->measureText(text,pixels/static_cast<float>(frame_size.height)*font_renderer->emScale()*0.5f).x*frame_size.width;
+        }
+        // Ascender and positive descender distances from the baseline.
+        glm::vec2 text_line_metrics_pixels(float pixels) const noexcept {
+            return font_renderer->lineMetricsEm()*pixels;
         }
         glm::vec2 measure_text(std::string_view text, float scale) const {
-            return font_renderer->measureText(text, scale);
+            return font_renderer->measureText(text, scale*effective_text_scale());
         }
 
         void draw_image(const texture& texture, float x, float y, float scaleX = 1.0f, float scaleY = 1.0f,
@@ -142,6 +169,25 @@ export class gui_renderer {
         {
             apply_view();
             image_renderer->renderImage(commandBuffer, frame, renderPass, texture, x, y, scaleX, scaleY, color*this->color);
+        }
+        // Explicit screen-space mesh geometry, including perspective-correct
+        // UVs, vertex tint, optional additive blending and depth testing.
+        // Depth testing requires a depth attachment in the selected render pass.
+        void draw_textured_triangles(const texture& image,
+            std::span<const auroreengine::image_renderer::textured_vertex> vertices,
+            bool additive=false,bool depth=false) {
+            apply_view();
+            image_renderer->renderTexturedTriangles(commandBuffer,frame,renderPass,image,vertices,color,additive,depth);
+        }
+        void draw_textured_triangles(vk::ImageView image,
+            std::span<const auroreengine::image_renderer::textured_vertex> vertices,
+            bool additive=false,bool depth=false) {
+            apply_view();
+            image_renderer->renderTexturedTriangles(commandBuffer,frame,renderPass,image,vertices,color,additive,depth);
+        }
+
+        void draw_glass_frame(float x,float y,float width,float height,float opacity=1) {
+            apply_view();image_renderer->renderGlassFrame(commandBuffer,frame,renderPass,x,y,width,height,opacity);
         }
         void draw_image_a(const texture& texture, float x, float y, float scaleX = 1.0f, float scaleY = 1.0f,
             glm::vec4 color = glm::vec4(1.0, 1.0, 1.0, 1.0), bool center = true)
@@ -160,10 +206,13 @@ export class gui_renderer {
             apply_view();
             image_renderer->renderImage(commandBuffer, frame, renderPass, texture, x, y, scaleX, scaleY, color*this->color);
         }
-        // Experimental: glass effect for icons (no background refraction; self-contained effect)
+        // xmb-web-inspired translucent glass pass for icons. The texture passed
+        // here should be the imported icon normal map when available; the
+        // engine glass shader samples the live shell background for refraction.
         void draw_image_glass(const texture& texture, float x, float y, float scaleX = 1.0f, float scaleY = 1.0f,
             glm::vec4 color = glm::vec4(1.0, 1.0, 1.0, 1.0))
         {
+            if(!texture.loaded) return;
             apply_view();
             image_renderer->renderImageGlass(commandBuffer, frame, renderPass, texture.imageView.get(), x, y, scaleX, scaleY, color*this->color);
         }
@@ -189,6 +238,18 @@ export class gui_renderer {
         void draw_generic(std::ranges::range auto vertices, simple_renderer::params p = {})
             requires(std::same_as<std::ranges::range_value_t<decltype(vertices)>, simple_renderer::vertex_data>)
         {
+            // The overwhelmingly common steady-state path has an identity
+            // colour stack. Forward that range directly so fixed-size UI
+            // geometry (clock rings, hands, focus marks) does not allocate a
+            // temporary vector on every draw. Preserve the copy-and-modulate
+            // path only while an inherited colour/fade is active.
+            if(color.r == 1.0F && color.g == 1.0F &&
+               color.b == 1.0F && color.a == 1.0F) {
+                apply_view();
+                simple_renderer->renderGeneric(
+                    commandBuffer, frame, renderPass, vertices, p);
+                return;
+            }
             std::vector<simple_renderer::vertex_data> vertices_vector(vertices.begin(), vertices.end());
             for(auto& v : vertices_vector) {
                 v.color *= color;
@@ -212,6 +273,7 @@ export class gui_renderer {
         }
 
         void reset() {
+            text_color=glm::vec4(1.0f);text_scale=1.0f;
             reset_color();
             reset_clip();
         }
@@ -236,6 +298,7 @@ export class gui_renderer {
             return renderPass;
         }
     private:
+        float effective_text_scale() const { return std::isfinite(text_scale) && text_scale>0.0f?text_scale:1.0f; }
         void apply_view() {
             if(!viewport_stack.empty()) {
                 commandBuffer.setViewport(0, viewport_stack.back());

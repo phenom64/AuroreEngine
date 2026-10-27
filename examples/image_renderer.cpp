@@ -2,7 +2,7 @@
 #include <cstdint>
 #include <vector>
 
-import dreamrender;
+import auroreengine;
 import spdlog;
 import vulkan_hpp;
 
@@ -15,16 +15,16 @@ constexpr char example_image_data[] = {
 constexpr std::array<uint8_t, sizeof(example_image_data)> example_image =
     std::bit_cast<std::array<uint8_t, sizeof(example_image_data)>>(example_image_data);
 
-class simple_phase : public dreamrender::phase {
+class simple_phase : public auroreengine::phase {
     public:
-        simple_phase(dreamrender::window* win) : dreamrender::phase(win),
+        simple_phase(auroreengine::window* win) : auroreengine::phase(win),
             imageRenderer(device, win->swapchainExtent, win->gpuFeatures) {}
 
         vk::UniqueRenderPass renderPass;
         std::vector<vk::UniqueFramebuffer> framebuffers;
 
-        dreamrender::texture texture{device, allocator};
-        dreamrender::image_renderer imageRenderer;
+        auroreengine::texture texture{device, allocator};
+        auroreengine::image_renderer imageRenderer;
 
         void preload() override {
             phase::preload();
@@ -40,7 +40,7 @@ class simple_phase : public dreamrender::phase {
             renderPass = device.createRenderPassUnique(vk::RenderPassCreateInfo({}, attachment, subpass, dependency));
 
             imageRenderer.preload({renderPass.get()}, win->config.sampleCount);
-            add_task(loader->loadTexture(&texture, dreamrender::LoadDataView{example_image, "PNG"}));
+            add_task(loader->loadTexture(&texture, auroreengine::LoadDataView{example_image, "PNG"}));
         }
         void prepare(std::vector<vk::Image> swapchainImages, std::vector<vk::ImageView> swapchainViews) override {
             phase::prepare(swapchainImages, swapchainViews);
@@ -76,18 +76,18 @@ class simple_phase : public dreamrender::phase {
 
             vk::PipelineStageFlags waitStages = vk::PipelineStageFlagBits::eColorAttachmentOutput;
             vk::SubmitInfo submitInfo(1, &imageAvailable, &waitStages, 1, &commandBuffer, 1, &renderFinished);
-            graphicsQueue.submit(submitInfo, fence);
+            submit_graphics(submitInfo, fence);
         }
 };
 
 int main() {
     spdlog::set_level(spdlog::level::debug);
 
-    dreamrender::window_config config;
+    auroreengine::window_config config;
     config.title = "Simple Example";
     config.name = "simple-example";
 
-    dreamrender::window window{config};
+    auroreengine::window window{config};
     window.init();
     window.set_phase(new simple_phase(&window));
     window.loop();

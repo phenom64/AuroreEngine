@@ -5,7 +5,7 @@
  */
 module;
 
-export module dreamrender;
+export module auroreengine;
 
 export import :debug;
 export import :gui_renderer;
