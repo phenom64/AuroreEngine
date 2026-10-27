@@ -269,6 +269,10 @@ export class font_renderer {
             if(FT_Set_Pixel_Sizes(ftFace->get(), 0, fontSize) != 0) {
                 throw std::runtime_error("Failed to set font size");
             }
+            fontLineMetrics = {
+                static_cast<float>(ftFace->get()->size->metrics.ascender) / (64.0f * std::max(fontSize,1)),
+                -static_cast<float>(ftFace->get()->size->metrics.descender) / (64.0f * std::max(fontSize,1))
+            };
 #ifdef AUROREENGINE_USE_HARFBUZZ
             int width = 2048, height = 2048;
             spdlog::debug("Font atlas (HB) {}x{}", width, height);
@@ -713,6 +717,7 @@ export class font_renderer {
         }
         float emScale() const noexcept { return 2.0f*lineHeight/std::max(fontSize,1); }
         float baselineEm() const noexcept { return static_cast<float>(baselinePx)/std::max(fontSize,1); }
+        glm::vec2 lineMetricsEm() const noexcept { return fontLineMetrics; }
         glm::vec2 measureText(std::string_view text, float scale = 1.0f) {
             float width = 0;
 #ifdef AUROREENGINE_USE_HARFBUZZ
@@ -913,6 +918,7 @@ export class font_renderer {
         size_t maxTexts{};
         float lineHeight{};
         int baselinePx{};
+        glm::vec2 fontLineMetrics{};
 
         struct VertexCharacter {
             glm::vec2 position;

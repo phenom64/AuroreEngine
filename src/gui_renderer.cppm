@@ -156,6 +156,10 @@ export class gui_renderer {
         float text_width_pixels(std::string_view text,float pixels) const {
             return font_renderer->measureText(text,pixels/static_cast<float>(frame_size.height)*font_renderer->emScale()*0.5f).x*frame_size.width;
         }
+        // Ascender and positive descender distances from the baseline.
+        glm::vec2 text_line_metrics_pixels(float pixels) const noexcept {
+            return font_renderer->lineMetricsEm()*pixels;
+        }
         glm::vec2 measure_text(std::string_view text, float scale) const {
             return font_renderer->measureText(text, scale*effective_text_scale());
         }
