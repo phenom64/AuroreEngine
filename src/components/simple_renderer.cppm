@@ -5,6 +5,7 @@
  */
 module;
 
+#include <cstddef>
 #include <vector>
 
 #include <iostream>
@@ -27,7 +28,23 @@ export struct simple_params {
     std::array<float, 4> border_radius;
 
     float aspect_ratio = std::numeric_limits<float>::quiet_NaN();
+
+    // Pixel-space shape, used when radius_px or edge_falloff_px is set:
+    // antialiased rounded corners of radius_px, and optionally an edge
+    // profile. A positive edge_falloff_px gives an inner glow: alpha is full
+    // along the edge and decays exponentially towards edge_fill inside. A
+    // negative one gives an outer glow (halo or soft shadow) decaying outside
+    // a shape inset_px inside the quad, so the quad must leave room for it.
+    // renderRect fills size_px from the frame size; quads supply it themselves.
+    float radius_px = 0.0f;
+    float edge_falloff_px = 0.0f;
+    float edge_fill = 1.0f;
+    glm::vec2 size_px{0.0f, 0.0f};
+    float inset_px = 0.0f;
 };
+static_assert(offsetof(simple_params, radius_px) == 52 && offsetof(simple_params, size_px) == 64 &&
+    offsetof(simple_params, inset_px) == 72,
+    "simple_params must match the std430 push-constant layout in simple_renderer.frag");
 
 export class simple_renderer {
     public:
@@ -152,6 +169,9 @@ export class simple_renderer {
             };
             if(p.aspect_ratio != p.aspect_ratio) {
                 p.aspect_ratio = aspectRatio * (size.x/size.y);
+            }
+            if((p.radius_px > 0.0f || p.edge_falloff_px != 0.0f) && p.size_px.x <= 0.0f) {
+                p.size_px = {size.x * static_cast<float>(frameSize.width), size.y * static_cast<float>(frameSize.height)};
             }
             renderQuad(cmd, frame, renderPass, vertices, p);
         }

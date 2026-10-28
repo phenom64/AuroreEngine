@@ -17,6 +17,11 @@ layout(push_constant) uniform RenderParams
 	vec2 blur[4];
 	float border_radius[4];
 	float aspect_ratio;
+	float radius_px;
+	float edge_falloff_px;
+	float edge_fill;
+	vec2 size_px;
+	float inset_px;
 } params;
 
 float edge_factor(vec2 interval, float coordinate)
@@ -38,6 +43,25 @@ void main()
 	float yp = edge_factor(params.blur[2], inTexCoord.y);
 	float yn = edge_factor(params.blur[3], 1.0 - inTexCoord.y);
 	float f1 = xp * xn * yp * yn;
+
+	if(params.size_px.x > 0.0 && (params.radius_px > 0.0 || params.edge_falloff_px != 0.0)) {
+		// Signed distance to a rounded rectangle in pixels (negative inside),
+		// with one pixel of antialiasing measured in screen space.
+		vec2 half_size = max(params.size_px * 0.5 - vec2(params.inset_px), vec2(0.0));
+		float r = min(params.radius_px, min(half_size.x, half_size.y));
+		vec2 q = abs(inTexCoord * params.size_px - params.size_px * 0.5) - (half_size - vec2(r));
+		float sd = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;
+		float aa = max(fwidth(sd), 0.0001);
+		float shape = clamp(0.5 - sd / aa, 0.0, 1.0);
+		if(params.edge_falloff_px > 0.0) {
+			float depth = max(-sd - 0.5, 0.0);
+			shape *= mix(params.edge_fill, 1.0, exp(-depth / params.edge_falloff_px));
+		} else if(params.edge_falloff_px < 0.0) {
+			shape = sd <= 0.0 ? params.edge_fill : exp(-sd / -params.edge_falloff_px);
+		}
+		outColor = vec4(inColor.rgb, inColor.a * f1 * shape);
+		return;
+	}
 
 	float f2 = 1.0;
 	if(!isnan(params.aspect_ratio)) {

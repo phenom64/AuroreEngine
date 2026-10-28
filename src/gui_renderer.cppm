@@ -187,7 +187,8 @@ export class gui_renderer {
         }
 
         void draw_glass_frame(float x,float y,float width,float height,float opacity=1) {
-            apply_view();image_renderer->renderGlassFrame(commandBuffer,frame,renderPass,x,y,width,height,opacity);
+            // Respect the inherited colour stack so fades hide the frame too.
+            apply_view();image_renderer->renderGlassFrame(commandBuffer,frame,renderPass,x,y,width,height,opacity*color.a);
         }
         void draw_image_a(const texture& texture, float x, float y, float scaleX = 1.0f, float scaleY = 1.0f,
             glm::vec4 color = glm::vec4(1.0, 1.0, 1.0, 1.0), bool center = true)
