@@ -242,6 +242,15 @@ export class font_renderer {
         // Supply known UI strings before preload; their shaped glyphs share the single CPU atlas upload.
         void set_preload_texts(std::vector<std::string> texts) { preloadTexts = std::move(texts); }
 
+        // Caller drains GPU work before replacing render-pass pipelines.
+        // Keep the resident atlas, shaping cache and descriptors intact.
+        void rebuild_pipelines(const std::vector<vk::RenderPass>& renderPasses,
+                              vk::SampleCountFlagBits samples, vk::PipelineCache cache = {}) {
+            pipelines.clear();
+            last_sample_count = samples;
+            build_pipelines(renderPasses, cache);
+        }
+
         std::shared_future<void> preload(resource_loader* loader,
             const std::vector<vk::RenderPass>& renderPasses, vk::SampleCountFlagBits sampleCount,
             vk::PipelineCache pipelineCache = {},
