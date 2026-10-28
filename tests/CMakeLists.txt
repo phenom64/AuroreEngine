@@ -19,3 +19,9 @@ endfunction()
 
 aurore_add_v2_test(aurore_v2_time_tests v2/core/time_tests.cpp)
 aurore_add_v2_test(aurore_v2_draw_list_tests v2/ui/minimal_draw_list_tests.cpp)
+
+add_executable(aurore_swapchain_policy_tests integration/swapchain_policy_tests.cpp)
+target_link_libraries(aurore_swapchain_policy_tests PRIVATE Vulkan::Headers)
+target_compile_features(aurore_swapchain_policy_tests PRIVATE cxx_std_23)
+set_target_properties(aurore_swapchain_policy_tests PROPERTIES CXX_SCAN_FOR_MODULES OFF)
+add_test(NAME aurore_swapchain_policy_tests COMMAND aurore_swapchain_policy_tests)

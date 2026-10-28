@@ -13,6 +13,7 @@ module;
 #define STDIN_FILENO 0
 #endif
 
+#include "swapchain_policy.hpp"
 #include <algorithm>
 #include <cstdlib>
 #include <cstdint>
@@ -423,6 +424,11 @@ export class window
                     afterLimiter = now;
                 }
 
+                if(!config.headless&&!config.workaround_no_swapchain&&
+                   (SDL_GetWindowFlags(win.get())&SDL_WINDOW_MINIMIZED)) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                    continue;
+                }
                 std::scoped_lock lock(renderLock);
                 r = device->waitForFences(inFlightFences[currentFrame], true, UINT64_MAX);
                 if(r != vk::Result::eSuccess)
@@ -436,6 +442,7 @@ export class window
                 }
 
                 unsigned int imageIndex = 0;
+                bool suboptimalAcquire = false;
                 if(config.headless || config.workaround_no_swapchain) {
                     // This is incredibly weird and hacky, but by some miracle it works.
                     imageIndex = (currentFrame)%swapchainImageCount;
@@ -498,15 +505,15 @@ export class window
                     submitGraphics(submitInfo, {});
                     afterAcquire = std::chrono::steady_clock::now();
                 } else {
-                    std::tie(r, imageIndex) = device->acquireNextImageKHR(swapchain.get(), UINT64_MAX, imageAvailableSemaphores[currentFrame].get());
+                    r = device->acquireNextImageKHR(swapchain.get(), UINT64_MAX, imageAvailableSemaphores[currentFrame].get(), {}, &imageIndex);
                     if(r == vk::Result::eErrorOutOfDateKHR) {
                         spdlog::debug("Swapchain out of date on acquire; recreating");
                         recreateSwapchain();
                         continue; // retry next frame
                     } else if(r == vk::Result::eSuboptimalKHR) {
-                        spdlog::debug("Swapchain suboptimal on acquire; recreating");
-                        recreateSwapchain();
-                        continue; // retry next frame
+                        // A successful suboptimal acquire has signalled its semaphore.
+                        // Submit and present this image before replacing the swapchain.
+                        suboptimalAcquire = true;
                     } else if(r != vk::Result::eSuccess) {
                         spdlog::error("AcquireNextImage failed with result {}", vk::to_string(r));
                         recreateSwapchain();
@@ -525,7 +532,7 @@ export class window
 
                 if(!current_renderer)
                     throw std::runtime_error("No renderer set!");
-                current_renderer->render(imageIndex, imageAvailableSemaphores[currentFrame].get(), renderFinishedSemaphores[currentFrame].get(), inFlightFences[currentFrame]);
+                current_renderer->render(imageIndex, imageAvailableSemaphores[currentFrame].get(), renderFinishedSemaphores[imageIndex].get(), inFlightFences[currentFrame]);
                 afterRender = std::chrono::steady_clock::now();
 
                 if(config.headless || config.workaround_no_swapchain) {
@@ -547,16 +554,16 @@ export class window
                     commandBuffer.end();
 
                     vk::PipelineStageFlags waitStages = vk::PipelineStageFlagBits::eColorAttachmentOutput;
-                    vk::SubmitInfo submitInfo(1, &renderFinishedSemaphores[currentFrame].get(), &waitStages, 1, &commandBuffer, 0, {});
+                    vk::SubmitInfo submitInfo(1, &renderFinishedSemaphores[imageIndex].get(), &waitStages, 1, &commandBuffer, 0, {});
                     submitGraphics(submitInfo, headlessFences[imageIndex].get());
                     afterPresent = std::chrono::steady_clock::now();
                 } else {
-                    vk::PresentInfoKHR present_info(renderFinishedSemaphores[currentFrame].get(), swapchain.get(), imageIndex);
+                    vk::PresentInfoKHR present_info(renderFinishedSemaphores[imageIndex].get(), swapchain.get(), imageIndex);
                     {
                         std::scoped_lock queueGuard(queueLock);
-                        r = presentQueue.presentKHR(present_info);
+                        r = presentQueue.presentKHR(&present_info);
                     }
-                    if(r == vk::Result::eErrorOutOfDateKHR || r == vk::Result::eSuboptimalKHR) {
+                    if(r == vk::Result::eErrorOutOfDateKHR || r == vk::Result::eSuboptimalKHR || (r == vk::Result::eSuccess && suboptimalAcquire)) {
                         spdlog::debug("Present {} ; recreating swapchain", (r==vk::Result::eErrorOutOfDateKHR?"out-of-date":"suboptimal"));
                         recreateSwapchain();
                     } else if(r != vk::Result::eSuccess) {
@@ -644,9 +651,8 @@ export class window
                 swapchainExtent, 1, usage);
             swapchain_info.setPresentMode(swapchainPresentMode);
             swapchain_info.setOldSwapchain(recreate ? swapchain.get() : vk::SwapchainKHR{});
-            swapchain_info.setCompositeAlpha(vk::CompositeAlphaFlagBitsKHR::eInherit);
-            if(swapchainSupport.capabilities.supportedCompositeAlpha & vk::CompositeAlphaFlagBitsKHR::ePreMultiplied)
-                swapchain_info.setCompositeAlpha(vk::CompositeAlphaFlagBitsKHR::ePreMultiplied);
+            swapchain_info.setCompositeAlpha(static_cast<vk::CompositeAlphaFlagBitsKHR>(detail::choose_composite_alpha(
+                static_cast<VkCompositeAlphaFlagsKHR>(swapchainSupport.capabilities.supportedCompositeAlpha))));
             auto newSwapchain = device->createSwapchainKHRUnique(swapchain_info);
             swapchain = std::move(newSwapchain);
             swapchainImages = device->getSwapchainImagesKHR(swapchain.get());
@@ -662,11 +668,22 @@ export class window
                 swapchainImageViewsRaw.push_back(swapchainImageViews.back().get());
             }
             imagesInFlight.assign(swapchainImageCount, vk::Fence());
+            // Presentation owns these waits until its image can be acquired again.
+            // Frame fences only protect graphics submissions, not presentation.
+            resetPresentationSemaphores();
             swapchainDirty = false;
 
             if(recreate && current_renderer) {
                 current_renderer->prepare(swapchainImages, swapchainImageViewsRaw);
             }
+        }
+
+        void resetPresentationSemaphores() {
+            std::vector<vk::UniqueSemaphore> next;
+            next.reserve(swapchainImageCount);
+            for(uint32_t i=0;i<swapchainImageCount;++i)
+                next.push_back(device->createSemaphoreUnique(vk::SemaphoreCreateInfo()));
+            renderFinishedSemaphores=std::move(next);
         }
 
         void set_phase(phase* renderer, input::keyboard_handler* keyboard_handler = nullptr, input::controller_handler* controller_handler = nullptr) {
@@ -1238,23 +1255,22 @@ export class window
                 recreateSwapchain(false);
             }
 
-            for(auto& image : swapchainImages)
+            if(config.headless || config.workaround_no_swapchain)resetPresentationSemaphores();
+            for(int frame=0;frame<MAX_FRAMES_IN_FLIGHT;++frame)
             {
                 imageAvailableSemaphores.push_back(device->createSemaphoreUnique(vk::SemaphoreCreateInfo()));
-                renderFinishedSemaphores.push_back(device->createSemaphoreUnique(vk::SemaphoreCreateInfo()));
                 fences.push_back(device->createFenceUnique(vk::FenceCreateInfo(vk::FenceCreateFlagBits::eSignaled)));
 
                 inFlightFences.push_back(fences.back().get());
-                imagesInFlight.push_back(vk::Fence());
             }
+            imagesInFlight.assign(swapchainImageCount,vk::Fence());
 
 #if !defined(NDEBUG) && __linux__
             debugName(device.get(), graphicsQueue, "Graphics Queue");
             debugName(device.get(), presentQueue, "Present Queue");
-            for(int i=0; i<swapchainImageCount; i++)
+            for(int i=0; i<MAX_FRAMES_IN_FLIGHT; i++)
             {
                 debugName(device.get(), imageAvailableSemaphores[i].get(), "Image available Semaphore #"+std::to_string(i));
-                debugName(device.get(), renderFinishedSemaphores[i].get(), "Render finished Semaphore #"+std::to_string(i));
                 debugName(device.get(), fences[i].get(), "Render Fence #"+std::to_string(i));
             }
 #endif
