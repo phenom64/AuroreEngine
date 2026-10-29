@@ -14,6 +14,7 @@ module;
 #endif
 
 #include "swapchain_policy.hpp"
+#include "queue_family_policy.hpp"
 #include <algorithm>
 #include <cstdlib>
 #include <cstdint>
@@ -767,6 +768,16 @@ export class window
                 swapchainFormat.format, swapchainFormat.colorSpace,
                 swapchainExtent, 1, usage);
             swapchain_info.setPresentMode(swapchainPresentMode);
+            // Graphics renders, the present queue presents. If they are different
+            // families the images must be shared concurrently: the engine records
+            // no queue-family ownership transfers.
+            const auto sharing = detail::choose_swapchain_sharing(
+                queueFamilyIndices.graphicsFamily.value(), queueFamilyIndices.presentFamily.value());
+            if(sharing.concurrent) {
+                swapchain_info.setImageSharingMode(vk::SharingMode::eConcurrent);
+                swapchain_info.setQueueFamilyIndexCount(sharing.count);
+                swapchain_info.setPQueueFamilyIndices(sharing.indices.data());
+            }
             swapchain_info.setOldSwapchain(recreate ? swapchain.get() : vk::SwapchainKHR{});
             swapchain_info.setCompositeAlpha(static_cast<vk::CompositeAlphaFlagBitsKHR>(detail::choose_composite_alpha(
                 static_cast<VkCompositeAlphaFlagsKHR>(swapchainSupport.capabilities.supportedCompositeAlpha))));
@@ -1552,25 +1563,27 @@ export class window
             return score;
         }
         QueueFamilyIndices findQueueFamilies(vk::PhysicalDevice phyDev) {
-            QueueFamilyIndices indices{};
-
+            const bool usesSurface = !config.headless && !config.workaround_no_swapchain;
             auto families = phyDev.getQueueFamilyProperties();
 
-            unsigned index = 0;
+            std::vector<detail::queue_family_caps> caps;
+            caps.reserve(families.size());
+            uint32_t index = 0;
             for(auto& family : families)
             {
-                if(family.queueFlags & vk::QueueFlagBits::eGraphics)
-                    indices.graphicsFamily = index;
-                else if(family.queueFlags & vk::QueueFlagBits::eTransfer)
-                    indices.transferFamily = index;
-                if(!config.headless && !config.workaround_no_swapchain && phyDev.getSurfaceSupportKHR(index, surface.get()))
-                    indices.presentFamily = index;
+                caps.push_back({
+                    .graphics = static_cast<bool>(family.queueFlags & vk::QueueFlagBits::eGraphics),
+                    .transfer = static_cast<bool>(family.queueFlags & vk::QueueFlagBits::eTransfer),
+                    .present = usesSurface && phyDev.getSurfaceSupportKHR(index, surface.get()) == VK_TRUE,
+                });
                 index++;
             }
-            if(config.headless || config.workaround_no_swapchain) {
-                indices.presentFamily = indices.graphicsFamily;
-            }
+            const auto selected = detail::select_queue_families(caps, usesSurface);
 
+            QueueFamilyIndices indices{};
+            indices.graphicsFamily = selected.graphics;
+            indices.presentFamily = selected.present;
+            indices.transferFamily = selected.transfer;
             return indices;
         }
         SwapChainSupportDetails querySwapChainSupport(vk::PhysicalDevice phyDev) {
