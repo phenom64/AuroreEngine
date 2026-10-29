@@ -22,6 +22,7 @@ module;
 #include <limits>
 #include <cstdint>
 #include <unordered_set>
+#include <stdexcept>
 
 #include <glm/ext/vector_int2.hpp>
 
@@ -130,12 +131,18 @@ export class font_renderer {
         font_renderer(std::string  font_name, int font_size,
             vk::Device device, vma::Allocator allocator, vk::Extent2D frameSize, const gpu_features& features)
             : fontName(std::move(font_name)), fontSize(font_size), device(device), allocator(allocator),
-              aspectRatio(static_cast<double>(frameSize.width) / frameSize.height),
-              compat_mode(!check_features(features)) {}
+              compat_mode(!check_features(features)) { set_target_extent(frameSize); }
         ~font_renderer() {
             // loadTexture owns a raw destination pointer until its future resolves.
             // Keep that texture and the loader callback's atlas alive through completion.
             if(textureReady.valid()) textureReady.wait();
+        }
+
+        // Keep the atlas and shaped-text cache while updating coordinate conversion.
+        void set_target_extent(vk::Extent2D extent) {
+            if (extent.width == 0 || extent.height == 0)
+                throw std::invalid_argument("Font renderer target extent must be nonzero");
+            aspectRatio = static_cast<double>(extent.width) / extent.height;
         }
         struct text_cache_statistics {
             std::uint64_t hits{},misses{},evictions{};

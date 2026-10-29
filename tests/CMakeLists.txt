@@ -70,3 +70,6 @@ target_link_libraries(aurore_large_texture_upload_tests PRIVATE auroreengine::au
 
 add_executable(aurore_offscreen_presentation_tests EXCLUDE_FROM_ALL integration/offscreen_presentation.cpp)
 target_link_libraries(aurore_offscreen_presentation_tests PRIVATE auroreengine::auroreengine)
+
+add_executable(aurore_retained_target_extent_tests EXCLUDE_FROM_ALL integration/retained_target_extent.cpp)
+target_link_libraries(aurore_retained_target_extent_tests PRIVATE auroreengine::auroreengine)

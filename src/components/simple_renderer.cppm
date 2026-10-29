@@ -7,6 +7,7 @@ module;
 
 #include <cstddef>
 #include <vector>
+#include <stdexcept>
 
 #include <iostream>
 
@@ -56,9 +57,16 @@ export class simple_renderer {
         using params = simple_params;
 
         simple_renderer(vk::Device device, vma::Allocator allocator, vk::Extent2D frameSize, const gpu_features& features) :
-            device(device), allocator(allocator), frameSize(frameSize),
-            aspectRatio(static_cast<double>(frameSize.width)/frameSize.height) {}
+            device(device), allocator(allocator) { set_target_extent(frameSize); }
         ~simple_renderer() = default;
+
+        // Update coordinate conversion without rebuilding resident resources.
+        void set_target_extent(vk::Extent2D extent) {
+            if (extent.width == 0 || extent.height == 0)
+                throw std::invalid_argument("Simple renderer target extent must be nonzero");
+            frameSize = extent;
+            aspectRatio = static_cast<double>(extent.width) / extent.height;
+        }
 
         void preload(const std::vector<vk::RenderPass>& renderPasses, vk::SampleCountFlagBits sampleCount,
             vk::PipelineCache pipelineCache = {})

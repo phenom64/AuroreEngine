@@ -72,10 +72,17 @@ export class image_renderer {
         }
         constexpr static unsigned int default_max_images = 512;
 
-        image_renderer(vk::Device device, vk::Extent2D frameSize, const gpu_features& features) : device(device), frameSize(frameSize),
-            aspectRatio(static_cast<double>(frameSize.width)/frameSize.height), features(features),
-            compat_mode(!check_features(features)) {}
+        image_renderer(vk::Device device, vk::Extent2D frameSize, const gpu_features& features) : device(device), features(features),
+            compat_mode(!check_features(features)) { set_target_extent(frameSize); }
         ~image_renderer() = default;
+
+        // Update coordinate conversion without rebuilding resident resources.
+        void set_target_extent(vk::Extent2D extent) {
+            if (extent.width == 0 || extent.height == 0)
+                throw std::invalid_argument("Image renderer target extent must be nonzero");
+            frameSize = extent;
+            aspectRatio = static_cast<double>(extent.width) / extent.height;
+        }
 
         void preload(const std::vector<vk::RenderPass>& renderPasses, vk::SampleCountFlagBits sampleCount,
             vk::PipelineCache pipelineCache = {}, unsigned int max_images = default_max_images)

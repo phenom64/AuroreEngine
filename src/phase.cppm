@@ -30,8 +30,23 @@ export class phase
             pool = device.createCommandPoolUnique(vk::CommandPoolCreateInfo(vk::CommandPoolCreateFlagBits::eResetCommandBuffer, graphicsFamily));
         }
         virtual void prepare(std::vector<vk::Image> swapchainImages, std::vector<vk::ImageView> swapchainViews) {
-            const int imageCount = swapchainImages.size();
-            commandBuffers = device.allocateCommandBuffers(vk::CommandBufferAllocateInfo(pool.get(), vk::CommandBufferLevel::ePrimary, imageCount));
+            // The caller must drain submissions before replacing presentation
+            // targets. Reuse the batch when possible and release retired batches
+            // before allocating for a different target count.
+            const auto imageCount = swapchainImages.size();
+            if (commandBuffers.size() == imageCount) {
+                if (!commandBuffers.empty()) {
+                    device.resetCommandPool(pool.get(), vk::CommandPoolResetFlagBits::eReleaseResources);
+                }
+                return;
+            }
+            if (!commandBuffers.empty()) {
+                device.freeCommandBuffers(pool.get(), commandBuffers);
+                commandBuffers.clear();
+            }
+            if (imageCount != 0) {
+                commandBuffers = device.allocateCommandBuffers(vk::CommandBufferAllocateInfo(pool.get(), vk::CommandBufferLevel::ePrimary, imageCount));
+            }
         }
         virtual void init() {}
         // Main-thread lifecycle work after input and before frame throttling or
