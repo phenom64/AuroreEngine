@@ -31,6 +31,40 @@ target_compile_features(aurore_image_upload_tests PRIVATE cxx_std_23)
 set_target_properties(aurore_image_upload_tests PROPERTIES CXX_SCAN_FOR_MODULES OFF)
 add_test(NAME aurore_image_upload_tests COMMAND aurore_image_upload_tests)
 
+add_executable(aurore_font_staging_tests integration/font_staging_tests.cpp)
+target_compile_features(aurore_font_staging_tests PRIVATE cxx_std_23)
+set_target_properties(aurore_font_staging_tests PROPERTIES CXX_SCAN_FOR_MODULES OFF)
+add_test(NAME aurore_font_staging_tests COMMAND aurore_font_staging_tests)
+
+# Supply a real consumer's packaged font directory to exercise the CPU shaper.
+# No GPU, synthetic font fixture, or module import is needed by the test itself.
+set(AUROREENGINE_FONT_TEST_DATA_DIR "" CACHE PATH "Directory containing Play-Regular.ttf and fonts/NotoSans* for fallback tests")
+if(AUROREENGINE_FONT_TEST_DATA_DIR)
+  find_package(HarfBuzz CONFIG QUIET)
+endif()
+if(AUROREENGINE_FONT_TEST_DATA_DIR AND
+   (TARGET harfbuzz::harfbuzz OR TARGET HarfBuzz::harfbuzz))
+  add_executable(aurore_font_fallback_tests integration/font_fallback_tests.cpp)
+  target_link_libraries(aurore_font_fallback_tests PRIVATE Freetype::Freetype)
+  if(TARGET harfbuzz::harfbuzz)
+    target_link_libraries(aurore_font_fallback_tests PRIVATE harfbuzz::harfbuzz)
+  else()
+    target_link_libraries(aurore_font_fallback_tests PRIVATE HarfBuzz::harfbuzz)
+  endif()
+  target_compile_features(aurore_font_fallback_tests PRIVATE cxx_std_23)
+  set_target_properties(aurore_font_fallback_tests PROPERTIES CXX_SCAN_FOR_MODULES OFF)
+  if(MSVC)
+    target_compile_options(aurore_font_fallback_tests PRIVATE /UNDEBUG)
+  else()
+    target_compile_options(aurore_font_fallback_tests PRIVATE -UNDEBUG)
+  endif()
+  add_test(NAME aurore_font_fallback_tests COMMAND aurore_font_fallback_tests "${AUROREENGINE_FONT_TEST_DATA_DIR}")
+  if(WIN32 AND DEFINED _VCPKG_INSTALLED_DIR AND DEFINED VCPKG_TARGET_TRIPLET)
+    set_tests_properties(aurore_font_fallback_tests PROPERTIES ENVIRONMENT_MODIFICATION
+      "PATH=path_list_prepend:${_VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/$<IF:$<CONFIG:Debug>,debug/bin,bin>")
+  endif()
+endif()
+
 add_executable(aurore_large_texture_upload_tests EXCLUDE_FROM_ALL integration/large_texture_upload.cpp)
 target_link_libraries(aurore_large_texture_upload_tests PRIVATE auroreengine::auroreengine)
 

@@ -21,6 +21,7 @@ module;
 #include <version>
 #include <limits>
 #include <cstdint>
+#include <unordered_set>
 
 #include <glm/ext/vector_int2.hpp>
 
@@ -29,6 +30,8 @@ module;
 #ifdef AUROREENGINE_USE_HARFBUZZ
 #include <harfbuzz/hb.h>
 #include <harfbuzz/hb-ft.h>
+#include "font_shaping.hpp"
+#include "font_staging.hpp"
 #endif
 
 export module auroreengine:components.font_renderer;
@@ -73,32 +76,6 @@ std::vector<uint8_t> bake_glyph(const FT_Bitmap& bitmap) {
     return result;
 }
 }
-
-#ifdef AUROREENGINE_USE_HARFBUZZ
-namespace {
-
-// The current atlas is pre-populated by Unicode character coverage, while
-// HarfBuzz returns font-specific glyph IDs. Standard/contextual ligatures can
-// therefore produce an otherwise valid glyph ID that is not resident yet;
-// silently skipping it removed sequences such as "ff" from visible text.
-// Keep kerning and script shaping, but retain character-addressable glyphs
-// until the asynchronous atlas service can stage arbitrary shaped IDs before
-// a render pass begins. Required-script ligatures (`rlig`) remain enabled.
-constexpr std::array kCharacterAddressableFeatures{
-    hb_feature_t{HB_TAG('l', 'i', 'g', 'a'), 0, HB_FEATURE_GLOBAL_START,
-                 HB_FEATURE_GLOBAL_END},
-    hb_feature_t{HB_TAG('c', 'l', 'i', 'g'), 0, HB_FEATURE_GLOBAL_START,
-                 HB_FEATURE_GLOBAL_END},
-};
-
-void shape_character_addressable(hb_font_t* font, hb_buffer_t* buffer)
-{
-    hb_shape(font, buffer, kCharacterAddressableFeatures.data(),
-             static_cast<unsigned int>(kCharacterAddressableFeatures.size()));
-}
-
-} // namespace
-#endif
 
 struct ft_library_wrapper {
     FT_Library lib{};
@@ -155,7 +132,11 @@ export class font_renderer {
             : fontName(std::move(font_name)), fontSize(font_size), device(device), allocator(allocator),
               aspectRatio(static_cast<double>(frameSize.width) / frameSize.height),
               compat_mode(!check_features(features)) {}
-        ~font_renderer() = default;
+        ~font_renderer() {
+            // loadTexture owns a raw destination pointer until its future resolves.
+            // Keep that texture and the loader callback's atlas alive through completion.
+            if(textureReady.valid()) textureReady.wait();
+        }
         struct text_cache_statistics {
             std::uint64_t hits{},misses{},evictions{};
             std::size_t entries{},glyphs{};
@@ -169,78 +150,103 @@ export class font_renderer {
         }
 
 #ifdef AUROREENGINE_USE_HARFBUZZ
-        // Upload required glyphs (with ligatures enabled) into the atlas before drawing
+        // Record before a render pass, submitting atlas updates in graphics-queue order.
+        // Append-only staging keeps every recorded copy immutable until this atlas is retired.
         void stage_glyphs(vk::CommandBuffer cmd, std::string_view text)
         {
-            if(!hbFont || !hbBuffer) return;
+            if(!shaper) return;
+            shape_text(text);
+            stage_glyphs(cmd);
+        }
+
+        // Drain glyphs requested by prior measurement/draw calls. An unseen run
+        // encountered inside a render pass becomes drawable after the next drain.
+        void stage_glyphs(vk::CommandBuffer cmd)
+        {
+            if(!shaper || !textureReady.valid()) return;
             if(textureReady.wait_for(std::chrono::seconds(0)) != std::future_status::ready) return;
-            if(!glyphStagingMap) return;
-
-            hb_buffer_clear_contents(hbBuffer.get());
-            // Basic defaults; can be extended for Bidi/scripts later
-            hb_buffer_set_direction(hbBuffer.get(), HB_DIRECTION_INVALID);
-            hb_buffer_set_script(hbBuffer.get(), HB_SCRIPT_INVALID);
-            hb_buffer_set_language(hbBuffer.get(), HB_LANGUAGE_INVALID);
-            hb_buffer_add_utf8(hbBuffer.get(), text.data(), text.size(), 0, text.size());
-            hb_buffer_guess_segment_properties(hbBuffer.get());
-            shape_character_addressable(hbFont.get(), hbBuffer.get());
-
-            unsigned int gn = 0;
-            auto* infos = hb_buffer_get_glyph_infos(hbBuffer.get(), &gn);
-            // Collect missing glyphs
-            std::vector<uint32_t> missing;
-            missing.reserve(gn);
-            for(unsigned int i=0; i<gn; ++i) {
-                uint32_t gid = infos[i].codepoint;
-                if(hbGlyphs.find(gid) == hbGlyphs.end()) missing.push_back(gid);
-            }
+            textureReady.get();
+            std::vector<detail::font_shaper::glyph_id> missing;
+            missing.reserve(pendingGlyphs.size());
+            for(const auto key : pendingGlyphs)
+                if(!atlas->glyphs.contains(key)) missing.push_back(key);
             if(missing.empty()) return;
-
-            // Transition atlas to transfer dst
-            cmd.pipelineBarrier(vk::PipelineStageFlagBits::eFragmentShader, vk::PipelineStageFlagBits::eTransfer,
-                {}, {}, {}, vk::ImageMemoryBarrier(
-                    vk::AccessFlagBits::eShaderRead, vk::AccessFlagBits::eTransferWrite,
-                    vk::ImageLayout::eShaderReadOnlyOptimal, vk::ImageLayout::eTransferDstOptimal,
-                    vk::QueueFamilyIgnored, vk::QueueFamilyIgnored,
-                    fontTexture->image,
-                    vk::ImageSubresourceRange(vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1)));
-
-            std::vector<vk::BufferImageCopy> copies;
-            copies.reserve(missing.size());
-            uint8_t* base = static_cast<uint8_t*>(glyphStagingMap->get());
-            vk::DeviceSize offset = 0;
-            for(uint32_t gid : missing) {
-                // Ensure we have space in staging buffer (simple guard)
-                if(offset + 1024*1024 > glyphStagingSize) break;
-                HBGlyph* entry = rasterize_and_pack_glyph(gid, base, offset);
-                if(entry && entry->bitmapSize.x > 0 && entry->bitmapSize.y > 0) {
-                    copies.push_back(vk::BufferImageCopy(offset, 0, 0,
-                        vk::ImageSubresourceLayers(vk::ImageAspectFlagBits::eColor, 0, 0, 1),
-                        vk::Offset3D(entry->atlasPos.x, entry->atlasPos.y, 0),
-                        vk::Extent3D(entry->bitmapSize.x, entry->bitmapSize.y, 1)));
-                    offset += static_cast<vk::DeviceSize>(entry->bitmapSize.x * entry->bitmapSize.y * 4);
+            if(!glyphStagingMap) {
+                glyphStagingSize = static_cast<vk::DeviceSize>(atlas->width) * atlas->height * 4;
+                vk::BufferCreateInfo info({}, glyphStagingSize, vk::BufferUsageFlagBits::eTransferSrc);
+                vma::AllocationCreateInfo memoryInfo({}, vma::MemoryUsage::eCpuToGpu);
+                auto [buffer, memory] = allocator.createBufferUnique(info, memoryInfo);
+                glyphStagingBuf = std::move(buffer);
+                glyphStagingAlloc = std::move(memory);
+                glyphStagingMap = std::make_unique<vma::MemoryMapping>(allocator, glyphStagingAlloc.get());
+            }
+            struct Pending { detail::font_shaper::glyph_id key; HBGlyph glyph; vk::DeviceSize offset; };
+            std::vector<Pending> pending;
+            pending.reserve(missing.size());
+            const auto oldX = atlas->packX, oldY = atlas->packY, oldShelf = atlas->packShelfH;
+            const auto atom = allocator.getPhysicalDeviceProperties()->limits.nonCoherentAtomSize;
+            detail::font_staging_batch batch(glyphStagingUsed, glyphStagingSize, atom);
+            auto* base = static_cast<uint8_t*>(glyphStagingMap->get());
+            try {
+                for(auto key : missing) {
+                    auto raster = rasterize_glyph(*atlas, shaper->face(detail::font_shaper::face_index(key)),
+                                                  detail::font_shaper::glyph_index(key));
+                    const auto offset = batch.append(raster.pixels.size());
+                    if(!raster.pixels.empty()) std::memcpy(base + offset, raster.pixels.data(), raster.pixels.size());
+                    pending.push_back({key, raster.glyph, offset});
                 }
+            } catch(...) {
+                atlas->packX = oldX; atlas->packY = oldY; atlas->packShelfH = oldShelf;
+                throw;
+            }
+            std::vector<vk::BufferImageCopy> copies;
+            copies.reserve(pending.size());
+            for(const auto& entry : pending) {
+                if(entry.glyph.bitmapSize.x && entry.glyph.bitmapSize.y)
+                    copies.emplace_back(entry.offset, 0, 0,
+                        vk::ImageSubresourceLayers(vk::ImageAspectFlagBits::eColor, 0, 0, 1),
+                        vk::Offset3D(entry.glyph.atlasPos.x, entry.glyph.atlasPos.y, 0),
+                        vk::Extent3D(entry.glyph.bitmapSize.x, entry.glyph.bitmapSize.y, 1));
             }
             if(!copies.empty()) {
-                // Ensure CPU writes to the staging buffer are visible to the GPU
-                // before issuing the copy. On non-coherent memory, this flush is required.
-                // We flush only the written range [0, offset).
-                allocator.flushAllocation(glyphStagingAlloc.get(), 0, offset);
+                allocator.flushAllocation(glyphStagingAlloc.get(), batch.flush_begin(), batch.reserved_end() - batch.flush_begin());
+                cmd.pipelineBarrier(vk::PipelineStageFlagBits::eFragmentShader, vk::PipelineStageFlagBits::eTransfer,
+                    {}, {}, {}, vk::ImageMemoryBarrier(
+                        vk::AccessFlagBits::eShaderRead, vk::AccessFlagBits::eTransferWrite,
+                        vk::ImageLayout::eShaderReadOnlyOptimal, vk::ImageLayout::eTransferDstOptimal,
+                        vk::QueueFamilyIgnored, vk::QueueFamilyIgnored, fontTexture->image,
+                        vk::ImageSubresourceRange(vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1)));
                 cmd.copyBufferToImage(glyphStagingBuf.get(), fontTexture->image, vk::ImageLayout::eTransferDstOptimal, copies);
+                cmd.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eFragmentShader,
+                    {}, {}, {}, vk::ImageMemoryBarrier(
+                        vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eShaderRead,
+                        vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eShaderReadOnlyOptimal,
+                        vk::QueueFamilyIgnored, vk::QueueFamilyIgnored, fontTexture->image,
+                        vk::ImageSubresourceRange(vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1)));
             }
-            // Back to shader read
-            cmd.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eFragmentShader,
-                {}, {}, {}, vk::ImageMemoryBarrier(
-                    vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eShaderRead,
-                    vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eShaderReadOnlyOptimal,
-                    vk::QueueFamilyIgnored, vk::QueueFamilyIgnored,
-                    fontTexture->image,
-                    vk::ImageSubresourceRange(vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1)));
+            for(const auto& entry : pending) {
+                atlas->glyphs.emplace(entry.key, entry.glyph);
+                pendingGlyphs.erase(entry.key);
+            }
+            glyphStagingUsed = batch.reserved_end();
         }
+#else
+        void stage_glyphs(vk::CommandBuffer, std::string_view) {}
+        void stage_glyphs(vk::CommandBuffer) {}
 #endif
 
         // Supply known UI strings before preload; their shaped glyphs share the single CPU atlas upload.
         void set_preload_texts(std::vector<std::string> texts) { preloadTexts = std::move(texts); }
+
+        // Ordered optional faces; primary metrics and supported scripts keep their original face.
+        // Configure once before preload. Language switches then reuse this atlas and shape cache.
+        void set_fallback_fonts(std::vector<std::string> paths) {
+            if(textureReady.valid()) throw std::logic_error("Set fallback fonts before font preload");
+#ifndef AUROREENGINE_USE_HARFBUZZ
+            if(!paths.empty()) throw std::runtime_error("Font fallback requires HarfBuzz shaping support");
+#endif
+            fallbackFonts = std::move(paths);
+        }
 
         // Caller drains GPU work before replacing render-pass pipelines.
         // Keep the resident atlas, shaping cache and descriptors intact.
@@ -258,8 +264,10 @@ export class font_renderer {
             char32_t startChar = default_start_char, char32_t endChar = default_end_char,
             size_t maxCharacters = default_max_characters, size_t maxTexts = default_max_texts)
         {
+            if(textureReady.valid()) textureReady.get();
 #ifdef AUROREENGINE_USE_HARFBUZZ
             shapeCache.clear(); cachedGlyphCount=0; shapeClock=0;
+            pendingGlyphs.clear();
             shapeHits=shapeMisses=shapeEvictions=0;
 #endif
             this->maxCharacters = maxCharacters;
@@ -287,76 +295,43 @@ export class font_renderer {
                 -static_cast<float>(ftFace->get()->size->metrics.descender) / (64.0f * std::max(fontSize,1))
             };
 #ifdef AUROREENGINE_USE_HARFBUZZ
-            int width = 2048, height = 2048;
-            spdlog::debug("Font atlas (HB) {}x{}", width, height);
-            // Init line height/baseline from face metrics
-            lineHeight = static_cast<float>(ftFace->get()->size->metrics.height >> 6);
-            baselinePx = (ftFace->get()->size->metrics.ascender >> 6);
-            atlasWidth = width; atlasHeight = height; packX = 0; packY = 0; packShelfH = 0;
-            // Create atlas texture and pre-populate with a baseline glyph set (ASCII + Latin-1) on CPU.
-            // Upload as a single operation via the resource_loader to avoid in-pass copies.
+            const int width = 2048, height = 2048;
+            shaper = std::make_unique<detail::font_shaper>(fontName, fontSize, fallbackFonts);
+            lineHeight = shaper->line_height();
+            baselinePx = shaper->baseline();
+            atlas = std::make_shared<GlyphAtlas>();
+            atlas->width = width; atlas->height = height;
+            glyphStagingMap.reset(); glyphStagingAlloc.reset(); glyphStagingBuf.reset();
+            glyphStagingSize = glyphStagingUsed = 0;
             fontTexture = std::make_unique<texture>(device, allocator, width, height,
                 vk::ImageUsageFlagBits::eSampled, vk::Format::eR8G8B8A8Unorm);
-            std::string fontCapture = fontName; // capture by value for loader thread
-            int fontPx = fontSize;
-            auto textsCapture = preloadTexts;
-            textureReady = loader->loadTexture(fontTexture.get(), [this, width, height, fontCapture, fontPx, textsCapture = std::move(textsCapture)](uint8_t* p, size_t size){
-                const size_t need = static_cast<size_t>(width) * static_cast<size_t>(height) * 4;
+            // Separate FT/HB objects on the loader thread. The callback owns all its
+            // CPU state and never touches a renderer that might be being destroyed.
+            auto uploadShaper = std::make_shared<detail::font_shaper>(fontName, fontSize, fallbackFonts);
+            textureReady = loader->loadTexture(fontTexture.get(),
+                [atlasCapture = atlas, uploadShaper = std::move(uploadShaper), texts = preloadTexts](uint8_t* p, size_t size) {
+                auto& atlas = *atlasCapture;
+                const size_t need = static_cast<size_t>(atlas.width) * atlas.height * 4;
                 if(need > size) throw std::runtime_error("Font atlas staging too small");
-                std::fill(p, p+need, 0x00);
-
-                ft_library_wrapper lib;
-                ft_face_wrapper face(lib.get(), fontCapture);
-                if(FT_Set_Pixel_Sizes(face.get(), 0, fontPx) != 0) {
-                    throw std::runtime_error("Failed to set font size (atlas)");
-                }
-
-                // Reset packer for deterministic CPU build
-                packX = 0; packY = 0; packShelfH = 0;
-                hbGlyphs.clear();
-
-                auto insert_gid = [&](FT_UInt gid){
-                    if(gid == 0 || hbGlyphs.contains(gid)) return;
-                    if(FT_Load_Glyph(face.get(), gid, FT_LOAD_DEFAULT) != 0) return;
-                    if(FT_Render_Glyph(face.get()->glyph, FT_RENDER_MODE_NORMAL) != 0) return;
-                    FT_GlyphSlot slot = face.get()->glyph;
-                    FT_Bitmap bmp = slot->bitmap;
-
-                    int w = bmp.width ? bmp.width+2*glyph_padding : 0, h = bmp.rows ? bmp.rows+2*glyph_padding : 0;
-                    if(w == 0 || h == 0) {
-                        hbGlyphs.emplace(gid, HBGlyph{ {packX, packY}, {0,0}, {slot->bitmap_left, slot->bitmap_top}, int(slot->advance.x >> 6) });
-                        return;
-                    }
-                    if(packX + w > atlasWidth) { packX = 0; packY += packShelfH; packShelfH = 0; }
-                    if(packY + h > atlasHeight) throw std::runtime_error("Font atlas cannot fit the requested UI glyphs");
-                    const auto baked=bake_glyph(bmp);
-                    for(int yy=0; yy<h; ++yy)
-                        std::memcpy(p+((packY+yy)*width+packX)*4,baked.data()+yy*w*4,w*4);
-                    hbGlyphs.emplace(gid, HBGlyph{ {packX, packY}, {w, h}, {slot->bitmap_left-glyph_padding, slot->bitmap_top+glyph_padding}, int(slot->advance.x >> 6) });
-                    packX += w + 1; packShelfH = std::max(packShelfH, h + 1);
+                std::fill(p, p + need, 0x00);
+                auto insert = [&](detail::font_shaper::glyph_id key) {
+                    if(atlas.glyphs.contains(key)) return;
+                    auto raster = rasterize_glyph(atlas, uploadShaper->face(detail::font_shaper::face_index(key)),
+                                                  detail::font_shaper::glyph_index(key));
+                    const auto& glyph = raster.glyph;
+                    for(int y=0; y<glyph.bitmapSize.y; ++y)
+                        std::memcpy(p + ((glyph.atlasPos.y+y)*atlas.width + glyph.atlasPos.x)*4,
+                                    raster.pixels.data() + y*glyph.bitmapSize.x*4, glyph.bitmapSize.x*4);
+                    atlas.glyphs.emplace(key, glyph);
                 };
-
-                auto insert_cp = [&](uint32_t cp) { insert_gid(FT_Get_Char_Index(face.get(), cp)); };
-                // Basic ASCII
-                for(uint32_t cp = 32; cp <= 126; ++cp) insert_cp(cp);
-                // Latin-1 supplement
-                for(uint32_t cp = 160; cp <= 255; ++cp) insert_cp(cp);
-                // Include extended Latin, plus the exact glyph IDs required by script shaping.
-                for(uint32_t cp = 256; cp <= 511; ++cp) insert_cp(cp);
-                std::unique_ptr<hb_font_t, HbFontDeleter> font(hb_ft_font_create(face.get(), nullptr));
-                std::unique_ptr<hb_buffer_t, HbBufferDeleter> buffer(hb_buffer_create());
-                for(const auto& text : textsCapture) {
-                    if(text.size() > static_cast<std::size_t>(std::numeric_limits<int>::max()))
-                        throw std::length_error("Font preload text exceeds shaping limits");
-                    hb_buffer_reset(buffer.get());
-                    hb_buffer_set_cluster_level(buffer.get(), HB_BUFFER_CLUSTER_LEVEL_MONOTONE_CHARACTERS);
-                    hb_buffer_add_utf8(buffer.get(), text.data(), static_cast<int>(text.size()), 0, static_cast<int>(text.size()));
-                    hb_buffer_guess_segment_properties(buffer.get());
-                    shape_character_addressable(font.get(), buffer.get());
-                    unsigned int count{};
-                    const auto* glyphs = hb_buffer_get_glyph_infos(buffer.get(), &count);
-                    for(unsigned int i = 0; i < count; ++i) insert_gid(glyphs[i].codepoint);
+                // Bounded primary Latin bootstrap. Other scripts use only supplied text.
+                insert(detail::font_shaper::glyph_key(0, 0));
+                for(std::uint32_t cp=32; cp<=511; ++cp) {
+                    const auto gid = FT_Get_Char_Index(uploadShaper->face(0), cp);
+                    if(gid) insert(detail::font_shaper::glyph_key(0, gid));
                 }
+                for(const auto& text : texts)
+                    for(const auto& glyph : uploadShaper->shape(text).glyphs) insert(glyph.key);
             });
 #else
             unsigned int columns = std::ceil(std::sqrt(static_cast<double>(endChar - startChar + 1)));
@@ -486,18 +461,6 @@ export class font_renderer {
                 0.0f, false, 0.0f, false, vk::CompareOp::eNever, 0.0f, 0.0f, vk::BorderColor::eFloatTransparentBlack, false);
             sampler = device.createSamplerUnique(sampler_info);
 
-#ifdef AUROREENGINE_USE_HARFBUZZ
-            // Create persistent FT + HB objects for shaping
-            hbFtLib = std::make_unique<ft_library_wrapper>();
-            shapingFace = std::make_unique<ft_face_wrapper>(hbFtLib->get(), fontName);
-            if(FT_Set_Pixel_Sizes(shapingFace->get(), 0, fontSize) != 0) {
-                throw std::runtime_error("Failed to set font size (HB)");
-            }
-            hbFont.reset(hb_ft_font_create(shapingFace->get(), nullptr));
-            hbBuffer.reset(hb_buffer_create());
-            hb_buffer_set_cluster_level(hbBuffer.get(), HB_BUFFER_CLUSTER_LEVEL_MONOTONE_CHARACTERS);
-#endif
-
             {
                 std::array<vk::DescriptorSetLayoutBinding, 2> bindings = {
                     vk::DescriptorSetLayoutBinding(0, vk::DescriptorType::eUniformBufferDynamic, 1, vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eGeometry | vk::ShaderStageFlagBits::eFragment),
@@ -611,6 +574,7 @@ export class font_renderer {
             if(textureReady.wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
                 return;
             }
+            textureReady.get();
 
             int compat_factor = compat_mode ? 6 : 1;
             int total_chars = 0;
@@ -618,13 +582,17 @@ export class font_renderer {
                 VertexCharacter* vc = vertexPointers[frame] + compat_factor*vertexOffsets[frame];
 
 #ifdef AUROREENGINE_USE_HARFBUZZ
-                if(hbFont && hbBuffer) {
+                if(shaper) {
                     const auto& shaped=shape_text(text);
+                    if(vertexOffsets[frame] + shaped.glyphs.size() > maxTexts*maxCharacters)
+                        throw std::runtime_error("Too many shaped glyphs");
+                    // A render pass cannot upload atlas data. Defer an unseen run
+                    // intact until stage_glyphs drains its queued glyphs next frame.
+                    for(const auto& positioned : shaped.glyphs)
+                        if(!atlas->glyphs.contains(positioned.glyph)) return;
                     float cx = 0.0f, cy = 0.0f;
                     for(const auto& positioned:shaped.glyphs) {
-                        uint32_t gid = positioned.glyph;
-                        auto it = hbGlyphs.find(gid);
-                        if(it == hbGlyphs.end()) { continue; }
+                        auto it = atlas->glyphs.find(positioned.glyph);
                         const HBGlyph& g = it->second;
                         float x_off = positioned.x_offset;
                         float y_off = positioned.y_offset;
@@ -751,7 +719,7 @@ export class font_renderer {
         glm::vec2 measureText(std::string_view text, float scale = 1.0f) {
             float width = 0;
 #ifdef AUROREENGINE_USE_HARFBUZZ
-            if(hbFont && hbBuffer) {
+            if(shaper) {
                 // Measurement and every shadow/glow draw share the same shaped
                 // glyph run. Scale, position and colour do not affect shaping.
                 width=shape_text(text).advance;
@@ -839,47 +807,47 @@ export class font_renderer {
             glm::ivec2 bearing;
             int advance;
         };
-        // Rasterize glyph and place it in the atlas using a simple shelf packer.
-        // Writes RGBA pixels into the staging buffer at current offset.
-        // Returns pointer to the inserted entry or nullptr on failure.
-        HBGlyph* rasterize_and_pack_glyph(uint32_t gid, uint8_t* stagingBase, vk::DeviceSize curOffset) {
-            if(!shapingFace) return nullptr;
-            FT_Face face = shapingFace->get();
-            if(FT_Load_Glyph(face, gid, FT_LOAD_DEFAULT) != 0) return nullptr;
-            if(FT_Render_Glyph(face->glyph, FT_RENDER_MODE_NORMAL) != 0) return nullptr;
-            FT_GlyphSlot slot = face->glyph;
-            FT_Bitmap bmp = slot->bitmap;
-            int w = bmp.width ? bmp.width+2*glyph_padding : 0, h = bmp.rows ? bmp.rows+2*glyph_padding : 0;
-            if(w == 0 || h == 0) {
-                // Space-like glyph; synthesize empty entry with zero bitmap
-                auto [it, ok] = hbGlyphs.emplace(gid, HBGlyph{ {packX, packY}, {0,0}, {slot->bitmap_left, slot->bitmap_top}, int(slot->advance.x >> 6) });
-                return &it->second;
+        struct GlyphAtlas {
+            int width{}, height{}, packX{}, packY{}, packShelfH{};
+            std::unordered_map<detail::font_shaper::glyph_id, HBGlyph> glyphs;
+        };
+        struct RasterizedGlyph { HBGlyph glyph; std::vector<uint8_t> pixels; };
+        static RasterizedGlyph rasterize_glyph(GlyphAtlas& atlas, FT_Face face, FT_UInt gid) {
+            if(FT_Load_Glyph(face, gid, FT_LOAD_DEFAULT) != 0 ||
+               FT_Render_Glyph(face->glyph, FT_RENDER_MODE_NORMAL) != 0)
+                throw std::runtime_error("Failed to rasterize font glyph");
+            const auto slot = face->glyph;
+            const auto bitmap = slot->bitmap;
+            if(!bitmap.width || !bitmap.rows)
+                return {{ {atlas.packX, atlas.packY}, {0,0}, {slot->bitmap_left, slot->bitmap_top}, int(slot->advance.x >> 6) }, {}};
+            const int width = bitmap.width + 2*glyph_padding, height = bitmap.rows + 2*glyph_padding;
+            if(width > atlas.width) throw std::runtime_error("Font glyph exceeds atlas width");
+            if(atlas.packX + width > atlas.width) {
+                atlas.packX = 0; atlas.packY += atlas.packShelfH; atlas.packShelfH = 0;
             }
-            // Advance packer to next shelf if needed
-            if(packX + w > atlasWidth) { packX = 0; packY += packShelfH; packShelfH = 0; }
-            if(packY + h > atlasHeight) {
-                spdlog::error("Font atlas full ({}x{}); cannot place glyph {}", atlasWidth, atlasHeight, gid);
-                return nullptr;
-            }
-            const auto baked=bake_glyph(bmp);
-            std::memcpy(stagingBase+curOffset,baked.data(),baked.size());
-            HBGlyph entry{ {packX, packY}, {w, h}, {slot->bitmap_left-glyph_padding, slot->bitmap_top+glyph_padding}, int(slot->advance.x >> 6) };
-            auto res = hbGlyphs.emplace(gid, entry);
-            packX += w + 1; packShelfH = std::max(packShelfH, h + 1);
-            return &res.first->second;
+            if(atlas.packY + height > atlas.height)
+                throw std::runtime_error("Font atlas cannot fit the requested UI glyphs; preload a bounded text set");
+            RasterizedGlyph result{
+                { {atlas.packX, atlas.packY}, {width, height},
+                  {slot->bitmap_left-glyph_padding, slot->bitmap_top+glyph_padding}, int(slot->advance.x >> 6) },
+                bake_glyph(bitmap)};
+            atlas.packX += width + 1;
+            atlas.packShelfH = std::max(atlas.packShelfH, height + 1);
+            return result;
         }
 #endif
         vk::Device device;
         vma::Allocator allocator;
         std::string fontName;
         std::vector<std::string> preloadTexts;
+        std::vector<std::string> fallbackFonts;
         int fontSize;
 
         bool compat_mode{};
         vk::SampleCountFlagBits last_sample_count{vk::SampleCountFlagBits::e1};
 
 #ifdef AUROREENGINE_USE_HARFBUZZ
-        struct PositionedGlyph { std::uint32_t glyph; float x_offset,y_offset,advance; };
+        struct PositionedGlyph { detail::font_shaper::glyph_id glyph; float x_offset,y_offset,advance; };
         struct ShapedRun { std::vector<PositionedGlyph> glyphs; float advance{}; std::uint64_t used{}; };
         struct TextHash {
             using is_transparent=void;
@@ -890,28 +858,31 @@ export class font_renderer {
         std::size_t cachedGlyphCount{};
         std::uint64_t shapeClock{},shapeHits{},shapeMisses{},shapeEvictions{};
         static constexpr std::size_t maxCachedRuns=512,maxCachedGlyphs=65536;
+        void queue_missing_glyphs(const ShapedRun& run) {
+            if(!textureReady.valid() || textureReady.wait_for(std::chrono::seconds(0)) != std::future_status::ready) return;
+            textureReady.get();
+            for(const auto& glyph : run.glyphs) {
+                if(atlas->glyphs.contains(glyph.glyph)) continue;
+                if(pendingGlyphs.size() >= maxCachedGlyphs && !pendingGlyphs.contains(glyph.glyph))
+                    throw std::runtime_error("Font pending glyph capacity exhausted");
+                pendingGlyphs.insert(glyph.glyph);
+            }
+        }
         const ShapedRun& shape_text(std::string_view text) {
             if(auto cached=shapeCache.find(text);cached!=shapeCache.end()) {
-                ++shapeHits;cached->second.used=++shapeClock;return cached->second;
+                ++shapeHits;cached->second.used=++shapeClock;
+                queue_missing_glyphs(cached->second); return cached->second;
             }
             ++shapeMisses;
-            if(text.size()>static_cast<std::size_t>(std::numeric_limits<int>::max())) throw std::length_error("Text exceeds the shaping limit");
-            hb_buffer_clear_contents(hbBuffer.get());
-            hb_buffer_set_direction(hbBuffer.get(), HB_DIRECTION_INVALID);
-            hb_buffer_set_script(hbBuffer.get(), HB_SCRIPT_INVALID);
-            hb_buffer_set_language(hbBuffer.get(), HB_LANGUAGE_INVALID);
-            hb_buffer_add_utf8(hbBuffer.get(),text.data(),static_cast<int>(text.size()),0,static_cast<int>(text.size()));
-            hb_buffer_guess_segment_properties(hbBuffer.get());
-            shape_character_addressable(hbFont.get(),hbBuffer.get());
-            unsigned int count{};
-            auto* infos=hb_buffer_get_glyph_infos(hbBuffer.get(),&count);
-            auto* positions=hb_buffer_get_glyph_positions(hbBuffer.get(),&count);
-            ShapedRun run;run.glyphs.reserve(count);run.used=++shapeClock;
-            for(unsigned int i=0;i<count;++i) {
-                const float advance=positions[i].x_advance/64.0f/lineHeight;
-                run.glyphs.push_back({infos[i].codepoint,positions[i].x_offset/64.0f/lineHeight,-positions[i].y_offset/64.0f/lineHeight,advance});
-                run.advance+=advance;
+            const auto shaped = shaper->shape(text);
+            const auto count = shaped.glyphs.size();
+            ShapedRun run; run.glyphs.reserve(count); run.used = ++shapeClock;
+            for(const auto& glyph : shaped.glyphs) {
+                const float advance = glyph.advance / lineHeight;
+                run.glyphs.push_back({glyph.key, glyph.x_offset / lineHeight, glyph.y_offset / lineHeight, advance});
+                run.advance += advance;
             }
+            queue_missing_glyphs(run);
             if(count>maxCachedGlyphs || text.size()>16384) { scratchShape=std::move(run);return scratchShape; }
             while(!shapeCache.empty() && (shapeCache.size()>=maxCachedRuns || cachedGlyphCount+count>maxCachedGlyphs)) {
                 auto oldest=std::min_element(shapeCache.begin(),shapeCache.end(),[](const auto& a,const auto& b){return a.second.used<b.second.used;});
@@ -920,23 +891,13 @@ export class font_renderer {
             auto entry=shapeCache.emplace(std::string(text),std::move(run)).first;
             cachedGlyphCount+=entry->second.glyphs.size();return entry->second;
         }
-        struct HbBufferDeleter { void operator()(hb_buffer_t* b) const noexcept { if(b) hb_buffer_destroy(b); } };
-        struct HbFontDeleter { void operator()(hb_font_t* f) const noexcept { if(f) hb_font_destroy(f); } };
-        std::unique_ptr<ft_library_wrapper> hbFtLib;
-        std::unique_ptr<ft_face_wrapper> shapingFace;
-        std::unique_ptr<hb_font_t, HbFontDeleter> hbFont;
-        std::unique_ptr<hb_buffer_t, HbBufferDeleter> hbBuffer;
-        // Dynamic atlas state
-        int atlasWidth{};
-        int atlasHeight{};
-        int packX{};
-        int packY{};
-        int packShelfH{};
-        std::unordered_map<uint32_t, HBGlyph> hbGlyphs;
+        std::unique_ptr<detail::font_shaper> shaper;
+        std::shared_ptr<GlyphAtlas> atlas;
+        std::unordered_set<detail::font_shaper::glyph_id> pendingGlyphs;
         vma::UniqueBuffer glyphStagingBuf;
         vma::UniqueAllocation glyphStagingAlloc;
         std::unique_ptr<vma::MemoryMapping> glyphStagingMap;
-        vk::DeviceSize glyphStagingSize{};
+        vk::DeviceSize glyphStagingSize{}, glyphStagingUsed{};
 #endif
 
         struct GlyphMetrics {
