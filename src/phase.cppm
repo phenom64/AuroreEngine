@@ -34,6 +34,9 @@ export class phase
             commandBuffers = device.allocateCommandBuffers(vk::CommandBufferAllocateInfo(pool.get(), vk::CommandBufferLevel::ePrimary, imageCount));
         }
         virtual void init() {}
+        // Main-thread lifecycle work after input and before frame throttling or
+        // minimized-window rendering is skipped. Do not record GPU commands here.
+        virtual void after_events() {}
         virtual void render(int frame, vk::Semaphore imageAvailable, vk::Semaphore renderFinished, vk::Fence fence) {}
 
         void waitLoad() {

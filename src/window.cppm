@@ -398,6 +398,7 @@ export class window
                     if(quit) {
                         return;
                     }
+                    if(current_renderer) current_renderer->after_events();
                     afterEvents = std::chrono::steady_clock::now();
                     afterLimiter = afterEvents;
                 } else {
@@ -405,6 +406,12 @@ export class window
                     handle_sdl_events(quit);
                     if(quit) {
                         return;
+                    }
+                    if(current_renderer) current_renderer->after_events();
+                    if(!config.workaround_no_swapchain &&
+                       (SDL_GetWindowFlags(win.get())&SDL_WINDOW_MINIMIZED)) {
+                        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                        continue;
                     }
 
                     auto now = std::chrono::steady_clock::now();
@@ -424,11 +431,6 @@ export class window
                     afterLimiter = now;
                 }
 
-                if(!config.headless&&!config.workaround_no_swapchain&&
-                   (SDL_GetWindowFlags(win.get())&SDL_WINDOW_MINIMIZED)) {
-                    std::this_thread::sleep_for(std::chrono::milliseconds(10));
-                    continue;
-                }
                 std::scoped_lock lock(renderLock);
                 r = device->waitForFences(inFlightFences[currentFrame], true, UINT64_MAX);
                 if(r != vk::Result::eSuccess)
@@ -618,6 +620,12 @@ export class window
             if(config.headless || config.workaround_no_swapchain) {
                 return;
             }
+            if(recreate && (SDL_GetWindowFlags(win.get())&SDL_WINDOW_MINIMIZED)) {
+                // Presentation can become out-of-date after a frame has been
+                // acquired. Keep its resources until the surface is restored.
+                swapchainDirty=true;
+                return;
+            }
 
             if(recreate) {
                 device->waitIdle();
@@ -632,7 +640,13 @@ export class window
                 return p == config.preferredPresentMode;
             });
             swapchainPresentMode = presentModeIt == swapchainSupport.presentModes.end() ? swapchainSupport.presentModes[0] : *presentModeIt;
-            swapchainExtent = chooseSwapchainExtent(swapchainSupport.capabilities);
+            const auto nextExtent = chooseSwapchainExtent(swapchainSupport.capabilities);
+            if(nextExtent.width==0 || nextExtent.height==0) {
+                if(!recreate) throw std::runtime_error("Cannot create a swapchain for a zero-sized surface");
+                swapchainDirty=true;
+                return;
+            }
+            swapchainExtent = nextExtent;
             swapchainImageCount = swapchainSupport.capabilities.minImageCount + 1;
             if(swapchainSupport.capabilities.maxImageCount > 0) {
                 swapchainImageCount = std::min(swapchainImageCount, swapchainSupport.capabilities.maxImageCount);
