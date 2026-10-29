@@ -25,3 +25,11 @@ target_link_libraries(aurore_swapchain_policy_tests PRIVATE Vulkan::Headers)
 target_compile_features(aurore_swapchain_policy_tests PRIVATE cxx_std_23)
 set_target_properties(aurore_swapchain_policy_tests PROPERTIES CXX_SCAN_FOR_MODULES OFF)
 add_test(NAME aurore_swapchain_policy_tests COMMAND aurore_swapchain_policy_tests)
+
+add_executable(aurore_image_upload_tests integration/image_upload_tests.cpp)
+target_compile_features(aurore_image_upload_tests PRIVATE cxx_std_23)
+set_target_properties(aurore_image_upload_tests PROPERTIES CXX_SCAN_FOR_MODULES OFF)
+add_test(NAME aurore_image_upload_tests COMMAND aurore_image_upload_tests)
+
+add_executable(aurore_large_texture_upload_tests EXCLUDE_FROM_ALL integration/large_texture_upload.cpp)
+target_link_libraries(aurore_large_texture_upload_tests PRIVATE auroreengine::auroreengine)

@@ -12,6 +12,7 @@ module;
 #include <filesystem>
 #include <functional>
 #include <future>
+#include <memory>
 #include <mutex>
 #include <queue>
 #include <span>
@@ -76,7 +77,8 @@ bool load_texture(
     int index, LoadTask& task, std::mutex& lock,
     vk::Device device, vma::Allocator allocator, vma::Allocation allocation,
     vk::CommandBuffer commandBuffer,
-    uint8_t* decodeBuffer, size_t stagingSize, vk::Buffer stagingBuffer);
+    uint8_t* decodeBuffer, size_t stagingSize, vk::Buffer stagingBuffer,
+    std::shared_ptr<void>& stagingOwner);
 
 export class resource_loader
 {
@@ -278,15 +280,18 @@ export class resource_loader
                         continue;
                     }
 
-                    spdlog::debug("[Resource Loader {}] Loading {}", index,
-                        std::holds_alternative<std::filesystem::path>(task.src) ? std::get<std::filesystem::path>(task.src).string() : "dynamic resource");
+                    spdlog::debug("[Resource Loader {}] Loading {}", index,task.source_name());
                     auto t0 = std::chrono::high_resolution_clock::now();
                     std::exception_ptr error;
                     bool okay = false;
+                    bool submitted = false;
+                    // A large texture may own dedicated staging. Keep it
+                    // alive through submission and the completed GPU fence.
+                    std::shared_ptr<void> stagingOwner;
                     try {
                         if(task.type == LoadType::Texture)
                         {
-                            okay = load_texture(index, task, lock, device, allocator, allocation, commandBuffer.get(), cpuBuffer.get(), stagingSize, stagingBuffer);
+                            okay = load_texture(index, task, lock, device, allocator, allocation, commandBuffer.get(), cpuBuffer.get(), stagingSize, stagingBuffer, stagingOwner);
                         }
                         else if(task.type == LoadType::Model)
                         {
@@ -301,13 +306,15 @@ export class resource_loader
                                 // loop and all loader workers sharing this queue
                                 // serialize submission through the queue lock.
                                 std::scoped_lock queueGuard(queueLock);
+                                submitted = true;
                                 queue.submit(submits, fence.get());
                             }
                             vk::Result result = device.waitForFences(fence.get(), true, UINT64_MAX);
                             if(result != vk::Result::eSuccess)
                             {
-                                spdlog::error("[Resource Loader {}] Waiting for fence failed: {}", index, vk::to_string(result));
+                                throw std::runtime_error("Resource upload fence failed: "+vk::to_string(result));
                             }
+                            submitted = false;
                             // Reset only the command buffer and fence instead of the entire pool
                             commandBuffer.get().reset();
                             device.resetFences(fence.get());
@@ -335,6 +342,13 @@ export class resource_loader
                     }
 
                     if(error) {
+                        if(submitted) {
+                            // Never release dedicated staging or reset an
+                            // in-flight command buffer after a failed wait.
+                            // Device loss can also make draining fail; there
+                            // is then no successful GPU completion to await.
+                            try {std::scoped_lock queueGuard(queueLock);queue.waitIdle();}catch(...){}
+                        }
                         try {
                             commandBuffer.get().reset();
                             device.resetFences(fence.get());

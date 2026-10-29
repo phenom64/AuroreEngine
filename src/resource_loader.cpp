@@ -5,6 +5,7 @@
  */
 module;
 
+#include "image_upload.hpp"
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -15,6 +16,7 @@ module;
 #include <fstream>
 #include <istream>
 #include <mutex>
+#include <memory>
 #include <sstream>
 #include <string>
 #include <tuple>
@@ -36,22 +38,33 @@ import vma;
 
 namespace auroreengine {
 
-    constexpr unsigned int safe_size = 256;
-
-    static void upload_to_allocation(vma::Allocator allocator, vma::Allocation allocation, const void* src, vk::DeviceSize size) {
+    template<class Writer>static void write_to_allocation(vma::Allocator allocator, vma::Allocation allocation, vk::DeviceSize size, Writer writer) {
         if(size == 0) {
             return;
         }
 
         void* dst = allocator.mapMemory(allocation);
-        std::memcpy(dst, src, static_cast<std::size_t>(size));
-        allocator.flushAllocation(allocation, 0, size);
+        try {
+            writer(std::span<std::uint8_t>{static_cast<std::uint8_t*>(dst),static_cast<std::size_t>(size)});
+            allocator.flushAllocation(allocation, 0, size);
+        }catch(...) {allocator.unmapMemory(allocation);throw;}
         allocator.unmapMemory(allocation);
     }
+    static void upload_to_allocation(vma::Allocator allocator, vma::Allocation allocation, const void* src, vk::DeviceSize size) {
+        write_to_allocation(allocator,allocation,size,[src](auto bytes){std::memcpy(bytes.data(),src,bytes.size());});
+    }
+
+    struct TextureStaging {
+        // The buffer is destroyed before the memory allocation.
+        vma::UniqueAllocation allocation;
+        vma::UniqueBuffer buffer;
+    };
 
     std::string LoadTask::source_name() const {
-        if(std::holds_alternative<std::filesystem::path>(src))
-            return std::get<std::filesystem::path>(src).string();
+        if(std::holds_alternative<std::filesystem::path>(src)) {
+            const auto text=std::get<std::filesystem::path>(src).u8string();
+            return {text.begin(),text.end()};
+        }
         else if(std::holds_alternative<LoaderFunction>(src))
             return "dynamic data";
         else if(std::holds_alternative<LoadDataView>(src))
@@ -73,10 +86,30 @@ namespace auroreengine {
         int index, LoadTask& task, std::mutex& lock,
         vk::Device device, vma::Allocator allocator, vma::Allocation allocation,
         vk::CommandBuffer commandBuffer,
-        uint8_t* decodeBuffer, size_t stagingSize, vk::Buffer stagingBuffer)
+        uint8_t* decodeBuffer, size_t stagingSize, vk::Buffer stagingBuffer,
+        std::shared_ptr<void>& stagingOwner)
     {
         std::string name = task.source_name();
         texture* tex = std::get<texture*>(task.dst);
+        const auto validate_dimensions=[&](int width,int height) {
+            const auto limit=allocator.getPhysicalDeviceProperties()->limits.maxImageDimension2D;
+            if(width<=0||height<=0||static_cast<std::uint32_t>(width)>limit||static_cast<std::uint32_t>(height)>limit)
+                throw std::invalid_argument("Texture dimensions are zero or exceed this device's native image limit");
+            return detail::rgba_upload_layout(static_cast<std::size_t>(width),static_cast<std::size_t>(height),
+                static_cast<std::size_t>(width)*4,std::numeric_limits<std::size_t>::max());
+        };
+        const auto ensure_staging=[&](std::size_t bytes) {
+            if(bytes>detail::maximum_texture_upload_bytes)
+                throw std::length_error("Native texture upload exceeds the 128 MiB limit");
+            if(bytes<=stagingSize)return;
+            auto dedicated=std::make_shared<TextureStaging>();
+            auto [buffer,memory]=allocator.createBufferUnique(
+                vk::BufferCreateInfo({},bytes,vk::BufferUsageFlagBits::eTransferSrc,vk::SharingMode::eExclusive),
+                vma::AllocationCreateInfo({},vma::MemoryUsage::eCpuToGpu));
+            dedicated->buffer=std::move(buffer);dedicated->allocation=std::move(memory);
+            stagingBuffer=dedicated->buffer.get();allocation=dedicated->allocation.get();stagingOwner=std::move(dedicated);
+            stagingSize=bytes;
+        };
         if(std::holds_alternative<std::filesystem::path>(task.src) ||
             (std::holds_alternative<LoadDataView>(task.src) && std::get<LoadDataView>(task.src).type != "RAW"))
         {
@@ -89,28 +122,21 @@ namespace auroreengine {
                     tex->create_image(1, 1);
                 }
 
-                const size_t uploadSize = static_cast<size_t>(tex->width) * static_cast<size_t>(tex->height) * 4;
-                if(uploadSize == 0 || uploadSize > stagingSize) {
-                    spdlog::error("[Resource Loader {}] Cannot create fallback for {}x{} texture {}", index,
-                        tex->width, tex->height, name);
-                    return false;
-                }
-
-                std::fill(decodeBuffer, decodeBuffer + uploadSize, 0x00);
-                for(size_t i = 0; i + 3 < uploadSize; i += 4) {
-                    decodeBuffer[i + 0] = 0xFF;
-                    decodeBuffer[i + 1] = 0xFF;
-                    decodeBuffer[i + 2] = 0xFF;
-                    decodeBuffer[i + 3] = 0x00;
-                }
-                upload_to_allocation(allocator, allocation, decodeBuffer, uploadSize);
+                const auto layout=validate_dimensions(tex->width,tex->height);ensure_staging(layout.bytes);
+                write_to_allocation(allocator,allocation,layout.bytes,[](auto pixels) {
+                    for(std::size_t i=0;i<pixels.size();i+=4) {
+                        pixels[i]=pixels[i+1]=pixels[i+2]=0xff;pixels[i+3]=0;
+                    }
+                });
                 return true;
             };
 
             if(std::holds_alternative<std::filesystem::path>(task.src))
             {
                 const auto& path = std::get<std::filesystem::path>(task.src);
-                surface = sdl::unique_surface{sdl::image::Load(path.string().c_str())};
+                const auto text=path.u8string();
+                const std::string utf8(text.begin(),text.end());
+                surface = sdl::unique_surface{sdl::image::Load(utf8.c_str())};
             }
             else
             {
@@ -127,6 +153,7 @@ namespace auroreengine {
             else
             {
                 bool fallbackUploaded = false;
+                validate_dimensions(surface->w,surface->h);
                 if(surface->format->format != sdl::PixelFormatEnumVales::RGBA32)
                 {
                     sdl::unique_surface newSurface = sdl::unique_surface{sdl::ConvertSurfaceFormat(surface.get(), sdl::PixelFormatEnumVales::RGBA32, 0)};
@@ -142,54 +169,49 @@ namespace auroreengine {
 
                 if(!fallbackUploaded)
                 {
-                    std::size_t size = surface->w * surface->h * surface->format->BytesPerPixel;
-                    if(size > stagingSize)
+                    if(!check_state(index, task))return false;
                     {
-                        spdlog::warn("[Resource Loader {}] Image {} is too large ({} bytes), scaling it to {}x{}", index, name, size,
-                            safe_size, safe_size);
-                        sdl::unique_surface newSurface = sdl::unique_surface{sdl::CreateRGBSurface(0, safe_size, safe_size, 32, 0, 0, 0, 0)};
-                        if(!newSurface || sdl::BlitScaled(surface.get(), nullptr, newSurface.get(), nullptr) != 0) {
-                            spdlog::error("[Resource Loader {}] Failed to scale image {}; using transparent fallback", index, name);
-                            if(!upload_transparent_fallback())
-                                return false;
-                            fallbackUploaded = true;
-                        } else {
-                            surface = std::move(newSurface);
-                            size = surface->w * surface->h * surface->format->BytesPerPixel;
-                            assert(size <= stagingSize);
-                        }
+                        std::scoped_lock<std::mutex> guard(lock);
+                        if(tex->imageView&&(tex->width!=surface->w||tex->height!=surface->h))
+                            throw std::invalid_argument("Decoded image dimensions do not match the preallocated texture");
+                        tex->create_image(surface->w,surface->h);
                     }
-
-                    if(!fallbackUploaded)
-                    {
-                        if(!check_state(index, task)) {
-                            return false;
-                        } else {
-                            std::scoped_lock<std::mutex> l(lock);
-                            tex->create_image(surface->w, surface->h);
-                        }
-
-                        sdl::surface_lock lock{surface.get()};
-                        upload_to_allocation(allocator, allocation, lock.pixels(), surface->w * surface->h * 4);
-                    }
+                    if(surface->pitch<=0)throw std::invalid_argument("Decoded image has an invalid row pitch");
+                    const auto source_size=static_cast<std::size_t>(surface->pitch)*surface->h;
+                    const auto layout=detail::rgba_upload_layout(surface->w,surface->h,surface->pitch,source_size);
+                    ensure_staging(layout.bytes);
+                    sdl::surface_lock pixels{surface.get()};
+                    write_to_allocation(allocator,allocation,layout.bytes,[&](auto destination) {
+                        detail::pack_rgba_rows(destination,std::span<const std::uint8_t>{
+                            static_cast<const std::uint8_t*>(pixels.pixels()),source_size},layout);
+                    });
                 }
             }
         }
         else
         {
             name = "dynamic data";
-            size_t uploadSize = stagingSize;
-            if(tex->width > 0 && tex->height > 0) {
-                uploadSize = std::min(uploadSize, static_cast<size_t>(tex->width) * static_cast<size_t>(tex->height) * 4);
+            // Claim the destination before reading its fields or invoking user
+            // code; destroying a queued texture must never leave a dangling dst.
+            if(!check_state(index,task))return false;
+            if(!tex->imageView)throw std::invalid_argument("RAW texture uploads require a preallocated native-size image");
+            const auto layout=validate_dimensions(tex->width,tex->height);
+            if(auto* raw=std::get_if<LoadDataView>(&task.src)) {
+                if(raw->data.size()<layout.bytes)throw std::invalid_argument("RAW image data is shorter than its native texture");
+                ensure_staging(layout.bytes);upload_to_allocation(allocator,allocation,raw->data.data(),layout.bytes);
+            }else {
+                const bool dedicated=layout.bytes>stagingSize;ensure_staging(layout.bytes);
+                if(dedicated) {
+                    write_to_allocation(allocator,allocation,layout.bytes,[&](auto destination) {
+                        std::fill(destination.begin(),destination.end(),0);
+                        std::get<LoaderFunction>(task.src)(destination.data(),destination.size());
+                    });
+                }else {
+                    std::fill(decodeBuffer,decodeBuffer+layout.bytes,0);
+                    std::get<LoaderFunction>(task.src)(decodeBuffer,stagingSize);
+                    upload_to_allocation(allocator,allocation,decodeBuffer,layout.bytes);
+                }
             }
-
-            std::fill(decodeBuffer, decodeBuffer + uploadSize, 0x00);
-            std::get<LoaderFunction>(task.src)(decodeBuffer, stagingSize);
-            upload_to_allocation(allocator, allocation, decodeBuffer, uploadSize);
-
-            if(!check_state(index, task)) {
-                return false;
-            } // no need to create the image, because it already needs to be created
         }
 
         commandBuffer.begin(vk::CommandBufferBeginInfo());
