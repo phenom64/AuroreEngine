@@ -33,3 +33,6 @@ add_test(NAME aurore_image_upload_tests COMMAND aurore_image_upload_tests)
 
 add_executable(aurore_large_texture_upload_tests EXCLUDE_FROM_ALL integration/large_texture_upload.cpp)
 target_link_libraries(aurore_large_texture_upload_tests PRIVATE auroreengine::auroreengine)
+
+add_executable(aurore_offscreen_presentation_tests EXCLUDE_FROM_ALL integration/offscreen_presentation.cpp)
+target_link_libraries(aurore_offscreen_presentation_tests PRIVATE auroreengine::auroreengine)

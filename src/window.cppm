@@ -20,6 +20,7 @@ module;
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <iomanip>
 #include <iterator>
 #include <iostream>
@@ -29,6 +30,7 @@ module;
 #include <mutex>
 #include <optional>
 #include <set>
+#include <span>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -153,6 +155,15 @@ export struct window_config {
     bool workaround_no_swapchain = false;
 };
 
+// Borrowed, tightly packed BGRA8 sRGB pixels. The callback is synchronous on
+// the window owner thread after GPU completion; bytes must not be retained.
+// RGB contains the renderer's linear-premultiplied color, encoded by sRGB.
+export struct OffscreenFrame {
+    std::span<const std::uint8_t> bytes;
+    std::uint32_t width{},height{},row_stride{};
+    vk::Format format{vk::Format::eB8G8R8A8Srgb};
+};
+
 static std::filesystem::path env_path(const char* name) {
     const char* value = std::getenv(name);
     if(value && *value) {
@@ -243,6 +254,9 @@ export class window
             current_renderer.reset();
             loader.reset();
 
+            offscreenSink = {};
+            normalPresentation.reset();
+
             headlessTextures.clear();
             headlessOutputBuffers.clear();
             headlessOutputAllocations.clear();
@@ -263,6 +277,7 @@ export class window
         }
 
         void init() {
+            presentationOwner=std::this_thread::get_id();
             if(const char* c = std::getenv("AUROREENGINE_HEADLESS")) {
                 std::string_view sv{c};
                 if(sv == "1") {
@@ -366,6 +381,83 @@ export class window
             if(device) device->waitIdle();
         }
 
+        [[nodiscard]] bool offscreen_presentation_active() const noexcept {
+            return offscreenPresentation;
+        }
+
+        // Invoke before loop() or from phase::after_events(), never render() or
+        // the frame sink. Re-entry replaces only the sink extent/callback and
+        // keeps the original surface swapchain retained for eventual restore.
+        void begin_offscreen_presentation(vk::Extent2D extent,
+            std::function<void(const OffscreenFrame&)> sink) {
+            requirePresentationOwner();
+            if(config.headless || config.workaround_no_swapchain)
+                throw std::runtime_error("Offscreen presentation requires a normal surface window; headless and no-swapchain output are separate modes");
+            if(!device || !allocatorInitialized || !surface ||
+               (!offscreenPresentation && !swapchain))
+                throw std::runtime_error("Offscreen presentation requires an initialized surface window");
+            if(!sink)throw std::invalid_argument("Offscreen presentation requires a frame sink callback");
+            validateOffscreenExtent(extent);
+
+            std::scoped_lock lock(renderLock);
+            PresentationCall transition(presentationTransition);
+            // Allocate every image, view, copy buffer, command buffer and sync
+            // object before changing fields visible to the current phase.
+            auto next=makeOffscreenPresentation(extent);
+            next.dirty=swapchainDirty;
+            waitIdle();
+            auto previous=takePresentation();
+            const bool wasOffscreen=offscreenPresentation;
+            auto previousSink=std::move(offscreenSink);
+            installPresentation(std::move(next));
+            offscreenPresentation=true;offscreenSink=std::move(sink);
+            try {
+                if(current_renderer)current_renderer->prepare(swapchainImages,swapchainImageViewsRaw);
+            } catch(const std::exception& error) {
+                // Device loss must not bypass restoration of the public
+                // presentation state, even when draining itself fails.
+                try{waitIdle();}catch(...){}
+                auto rejected=takePresentation();
+                installPresentation(std::move(previous));
+                offscreenPresentation=wasOffscreen;offscreenSink=std::move(previousSink);
+                try {if(current_renderer)current_renderer->prepare(swapchainImages,swapchainImageViewsRaw);}
+                catch(...) {throw std::runtime_error("Offscreen preparation failed and the restored phase could not prepare; stop rendering and recreate the phase");}
+                throw std::runtime_error(std::string("Offscreen preparation failed; previous presentation restored: ")+error.what());
+            } catch(...) {
+                try{waitIdle();}catch(...){}
+                auto rejected=takePresentation();installPresentation(std::move(previous));
+                offscreenPresentation=wasOffscreen;offscreenSink=std::move(previousSink);
+                if(current_renderer)current_renderer->prepare(swapchainImages,swapchainImageViewsRaw);
+                throw;
+            }
+            if(!wasOffscreen)normalPresentation.emplace(std::move(previous));
+        }
+
+        void end_offscreen_presentation() {
+            requirePresentationOwner();
+            if(!offscreenPresentation)return;
+            std::scoped_lock lock(renderLock);
+            PresentationCall transition(presentationTransition);
+            waitIdle();
+            auto previous=takePresentation();auto previousSink=std::move(offscreenSink);
+            auto normal=std::move(*normalPresentation);
+            // Real-window resize notifications during the sink are deferred
+            // until the retained WSI presentation is visible again.
+            normal.dirty=normal.dirty||previous.dirty;
+            installPresentation(std::move(normal));offscreenPresentation=false;
+            try {
+                if(current_renderer)current_renderer->prepare(swapchainImages,swapchainImageViewsRaw);
+            } catch(...) {
+                try{waitIdle();}catch(...){}
+                normalPresentation.emplace(takePresentation());
+                installPresentation(std::move(previous));offscreenPresentation=true;offscreenSink=std::move(previousSink);
+                try {if(current_renderer)current_renderer->prepare(swapchainImages,swapchainImageViewsRaw);}
+                catch(...) {throw std::runtime_error("Normal presentation and rollback preparation failed; stop rendering and recreate the phase");}
+                throw std::runtime_error("Normal presentation could not prepare; the previous frame sink remains active");
+            }
+            normalPresentation.reset();
+        }
+
         void loop() {
             startTime = std::chrono::steady_clock::now();
             lastFrame = startTime;
@@ -408,7 +500,7 @@ export class window
                         return;
                     }
                     if(current_renderer) current_renderer->after_events();
-                    if(!config.workaround_no_swapchain &&
+                    if(!offscreenPresentation && !config.workaround_no_swapchain &&
                        (SDL_GetWindowFlags(win.get())&SDL_WINDOW_MINIMIZED)) {
                         std::this_thread::sleep_for(std::chrono::milliseconds(10));
                         continue;
@@ -432,12 +524,15 @@ export class window
                 }
 
                 std::scoped_lock lock(renderLock);
+                PresentationCall frame(presentationFrame);
                 r = device->waitForFences(inFlightFences[currentFrame], true, UINT64_MAX);
-                if(r != vk::Result::eSuccess)
+                if(r != vk::Result::eSuccess) {
+                    if(offscreenPresentation)throw std::runtime_error("Offscreen render fence wait failed: "+vk::to_string(r));
                     spdlog::error("Waiting for inFlightFences[{}] failed with result {}", currentFrame, vk::to_string(r));
+                }
                 afterFence = std::chrono::steady_clock::now();
 
-                if(swapchainDirty && !config.headless && !config.workaround_no_swapchain) {
+                if(swapchainDirty && !offscreenPresentation && !config.headless && !config.workaround_no_swapchain) {
                     spdlog::debug("Swapchain marked dirty; recreating before acquire");
                     recreateSwapchain();
                     continue;
@@ -445,16 +540,25 @@ export class window
 
                 unsigned int imageIndex = 0;
                 bool suboptimalAcquire = false;
-                if(config.headless || config.workaround_no_swapchain) {
+                if(offscreenPresentation || config.headless || config.workaround_no_swapchain) {
                     // This is incredibly weird and hacky, but by some miracle it works.
                     imageIndex = (currentFrame)%swapchainImageCount;
 
                     if(imagesInFlight[imageIndex]) {
                         r = device->waitForFences({imagesInFlight[imageIndex], headlessFences[imageIndex].get()}, true, UINT64_MAX);
-                        if(r != vk::Result::eSuccess)
+                        if(r != vk::Result::eSuccess) {
+                            if(offscreenPresentation)throw std::runtime_error("Offscreen readback fence wait failed: "+vk::to_string(r));
                             spdlog::error("Waiting for imagesInFlight[{0}] and headlessFences[{0}] failed with result {1}", imageIndex, vk::to_string(r));
+                        }
 
-                        if(!config.headless_output_dir.empty() || config.headless_terminal || config.workaround_no_swapchain) {
+                        if(offscreenPresentation) {
+                            const auto bytes=static_cast<std::size_t>(swapchainExtent.width)*swapchainExtent.height*4;
+                            r=allocator.copyAllocationToMemory(headlessOutputAllocations[imageIndex].get(),0,offscreenPixels.data(),bytes);
+                            if(r!=vk::Result::eSuccess)
+                                throw std::runtime_error("Offscreen GPU readback failed: "+vk::to_string(r));
+                            offscreenSink(OffscreenFrame{std::span<const std::uint8_t>{offscreenPixels.data(),bytes},
+                                swapchainExtent.width,swapchainExtent.height,swapchainExtent.width*4,swapchainFormat.format});
+                        } else if(!config.headless_output_dir.empty() || config.headless_terminal || config.workaround_no_swapchain) {
                             std::vector<char> data(swapchainExtent.width*swapchainExtent.height*4);
                             r = allocator.copyAllocationToMemory(headlessOutputAllocations[imageIndex].get(),
                                 0, data.data(), swapchainExtent.width*swapchainExtent.height*4);
@@ -502,7 +606,6 @@ export class window
                     commandBuffer.begin(vk::CommandBufferBeginInfo());
                     commandBuffer.end();
 
-                    vk::PipelineStageFlags waitStages = vk::PipelineStageFlagBits::eColorAttachmentOutput;
                     vk::SubmitInfo submitInfo(0, {}, {}, 1, &commandBuffer, 1, &imageAvailableSemaphores[currentFrame].get());
                     submitGraphics(submitInfo, {});
                     afterAcquire = std::chrono::steady_clock::now();
@@ -537,7 +640,7 @@ export class window
                 current_renderer->render(imageIndex, imageAvailableSemaphores[currentFrame].get(), renderFinishedSemaphores[imageIndex].get(), inFlightFences[currentFrame]);
                 afterRender = std::chrono::steady_clock::now();
 
-                if(config.headless || config.workaround_no_swapchain) {
+                if(offscreenPresentation || config.headless || config.workaround_no_swapchain) {
                     device->resetFences(headlessFences[imageIndex].get());
 
                     vk::CommandBuffer& commandBuffer = headlessCommandBuffersPost[imageIndex];
@@ -555,7 +658,7 @@ export class window
                             vk::Extent3D(swapchainExtent, 1)));
                     commandBuffer.end();
 
-                    vk::PipelineStageFlags waitStages = vk::PipelineStageFlagBits::eColorAttachmentOutput;
+                    vk::PipelineStageFlags waitStages = vk::PipelineStageFlagBits::eTransfer;
                     vk::SubmitInfo submitInfo(1, &renderFinishedSemaphores[imageIndex].get(), &waitStages, 1, &commandBuffer, 0, {});
                     submitGraphics(submitInfo, headlessFences[imageIndex].get());
                     afterPresent = std::chrono::steady_clock::now();
@@ -617,7 +720,7 @@ export class window
             std::scoped_lock queueGuard(queueLock);
             spdlog::debug("(Re)Creating swapchain");
 
-            if(config.headless || config.workaround_no_swapchain) {
+            if(offscreenPresentation || config.headless || config.workaround_no_swapchain) {
                 return;
             }
             if(recreate && (SDL_GetWindowFlags(win.get())&SDL_WINDOW_MINIMIZED)) {
@@ -818,6 +921,126 @@ export class window
 
         vk::UniqueDebugUtilsMessengerEXT debugMessenger;
     private:
+        struct PresentationCall {
+            bool& active;
+            explicit PresentationCall(bool& value):active(value){active=true;}
+            ~PresentationCall(){active=false;}
+        };
+        struct PresentationResources {
+            vk::SurfaceFormatKHR format;
+            vk::PresentModeKHR presentMode{};
+            vk::Extent2D extent;
+            std::uint32_t count{};
+            vk::ImageLayout finalLayout{};
+            bool dirty{};
+            std::vector<texture> textures;
+            vk::UniqueSwapchainKHR swapchain;
+            std::vector<vk::Image> images;
+            std::vector<vk::UniqueImageView> views;
+            std::vector<vk::ImageView> rawViews;
+            vk::UniqueCommandPool commandPool;
+            std::vector<vk::CommandBuffer> before,after;
+            std::vector<vma::UniqueAllocation> allocations;
+            std::vector<vma::UniqueBuffer> buffers;
+            std::vector<vk::UniqueFence> copyFences;
+            std::vector<vk::UniqueSemaphore> available,finished;
+            std::vector<vk::UniqueFence> fences;
+            std::vector<vk::Fence> imagesInFlight,inFlight;
+            std::vector<std::uint8_t> pixels;
+        };
+        bool offscreenPresentation{},presentationTransition{},presentationFrame{};
+        std::thread::id presentationOwner{std::this_thread::get_id()};
+        std::function<void(const OffscreenFrame&)> offscreenSink;
+        std::vector<std::uint8_t> offscreenPixels;
+        std::optional<PresentationResources> normalPresentation;
+
+        void requirePresentationOwner() const {
+            if(std::this_thread::get_id()!=presentationOwner)
+                throw std::runtime_error("Presentation transitions must run on the window owner thread");
+            if(presentationTransition||presentationFrame)
+                throw std::runtime_error("Schedule presentation transitions before loop() or in phase::after_events(), outside render() and the frame sink");
+        }
+        void validateOffscreenExtent(vk::Extent2D extent) const {
+            const auto limit=physicalDevice.getProperties().limits.maxImageDimension2D;
+            if(!extent.width||!extent.height||extent.width>limit||extent.height>limit||
+               extent.width>static_cast<std::uint32_t>(std::numeric_limits<int>::max())||
+               extent.height>static_cast<std::uint32_t>(std::numeric_limits<int>::max())||
+               extent.width>std::numeric_limits<std::uint32_t>::max()/4||
+               static_cast<std::uint64_t>(extent.width)*extent.height>std::numeric_limits<std::size_t>::max()/4)
+                throw std::invalid_argument("Offscreen extent must be nonzero and fit the device's native 2D image and row-stride limits");
+            constexpr auto format=vk::Format::eB8G8R8A8Srgb;
+            const auto required=vk::FormatFeatureFlagBits::eColorAttachment|vk::FormatFeatureFlagBits::eTransferSrc;
+            if((physicalDevice.getFormatProperties(format).optimalTilingFeatures&required)!=required)
+                throw std::runtime_error("This device cannot render and read back BGRA8 sRGB offscreen images");
+            try {
+                const auto properties=physicalDevice.getImageFormatProperties(format,vk::ImageType::e2D,vk::ImageTiling::eOptimal,
+                    vk::ImageUsageFlagBits::eColorAttachment|vk::ImageUsageFlagBits::eTransferSrc|vk::ImageUsageFlagBits::eTransferDst|vk::ImageUsageFlagBits::eSampled,{});
+                const auto bytes=static_cast<std::uint64_t>(extent.width)*extent.height*4;
+                if(extent.width>properties.maxExtent.width||extent.height>properties.maxExtent.height||bytes>properties.maxResourceSize)
+                    throw std::runtime_error("The requested native offscreen extent exceeds this format's image limits");
+            }catch(const vk::SystemError& error) {
+                throw std::runtime_error(std::string("BGRA8 sRGB offscreen images are unavailable on this device: ")+error.what());
+            }
+        }
+        PresentationResources makeOffscreenPresentation(vk::Extent2D extent) {
+            PresentationResources result;
+            result.format={vk::Format::eB8G8R8A8Srgb,vk::ColorSpaceKHR::eSrgbNonlinear};
+            result.presentMode=vk::PresentModeKHR::eImmediate;result.extent=extent;
+            result.count=static_cast<std::uint32_t>(MAX_FRAMES_IN_FLIGHT);
+            result.finalLayout=vk::ImageLayout::eTransferSrcOptimal;
+            const auto bytes=static_cast<std::size_t>(extent.width)*extent.height*4;
+            result.pixels.resize(bytes);result.textures.reserve(result.count);result.images.reserve(result.count);
+            result.views.reserve(result.count);result.rawViews.reserve(result.count);
+            for(std::uint32_t i=0;i<result.count;++i) {
+                result.textures.emplace_back(device.get(),allocator,static_cast<int>(extent.width),static_cast<int>(extent.height),
+                    vk::ImageUsageFlagBits::eColorAttachment|vk::ImageUsageFlagBits::eTransferDst|vk::ImageUsageFlagBits::eTransferSrc|vk::ImageUsageFlagBits::eSampled,
+                    result.format.format,vk::SampleCountFlagBits::e1);
+                result.images.push_back(result.textures.back().image);
+                result.views.push_back(device->createImageViewUnique(vk::ImageViewCreateInfo({},result.images.back(),vk::ImageViewType::e2D,
+                    result.format.format,{},vk::ImageSubresourceRange(vk::ImageAspectFlagBits::eColor,0,1,0,1))));
+                result.rawViews.push_back(result.views.back().get());
+                auto [buffer,allocation]=allocator.createBufferUnique(vk::BufferCreateInfo({},bytes,vk::BufferUsageFlagBits::eTransferDst),
+                    vma::AllocationCreateInfo({},vma::MemoryUsage::eGpuToCpu));
+                result.buffers.push_back(std::move(buffer));result.allocations.push_back(std::move(allocation));
+                result.copyFences.push_back(device->createFenceUnique(vk::FenceCreateInfo()));
+                result.available.push_back(device->createSemaphoreUnique(vk::SemaphoreCreateInfo()));
+                result.finished.push_back(device->createSemaphoreUnique(vk::SemaphoreCreateInfo()));
+                result.fences.push_back(device->createFenceUnique(vk::FenceCreateInfo(vk::FenceCreateFlagBits::eSignaled)));
+                result.inFlight.push_back(result.fences.back().get());
+            }
+            result.imagesInFlight.assign(result.count,vk::Fence{});
+            result.commandPool=device->createCommandPoolUnique(vk::CommandPoolCreateInfo(vk::CommandPoolCreateFlagBits::eResetCommandBuffer,queueFamilyIndices.graphicsFamily.value()));
+            result.before=device->allocateCommandBuffers(vk::CommandBufferAllocateInfo(result.commandPool.get(),vk::CommandBufferLevel::ePrimary,result.count));
+            result.after=device->allocateCommandBuffers(vk::CommandBufferAllocateInfo(result.commandPool.get(),vk::CommandBufferLevel::ePrimary,result.count));
+            return result;
+        }
+        PresentationResources takePresentation() {
+            PresentationResources result;
+            result.format=swapchainFormat;result.presentMode=swapchainPresentMode;result.extent=swapchainExtent;
+            result.count=swapchainImageCount;result.finalLayout=swapchainFinalLayout;result.dirty=swapchainDirty;
+            result.swapchain=std::move(swapchain);result.images=std::move(swapchainImages);
+            result.views=std::move(swapchainImageViews);result.rawViews=std::move(swapchainImageViewsRaw);
+            result.textures=std::move(headlessTextures);result.commandPool=std::move(headlessCommandPool);
+            result.before=std::move(headlessCommandBuffersPre);result.after=std::move(headlessCommandBuffersPost);
+            result.buffers=std::move(headlessOutputBuffers);result.allocations=std::move(headlessOutputAllocations);
+            result.copyFences=std::move(headlessFences);result.available=std::move(imageAvailableSemaphores);
+            result.finished=std::move(renderFinishedSemaphores);result.fences=std::move(fences);
+            result.imagesInFlight=std::move(imagesInFlight);result.inFlight=std::move(inFlightFences);
+            result.pixels=std::move(offscreenPixels);return result;
+        }
+        void installPresentation(PresentationResources resources) {
+            swapchainFormat=resources.format;swapchainPresentMode=resources.presentMode;swapchainExtent=resources.extent;
+            swapchainImageCount=resources.count;swapchainFinalLayout=resources.finalLayout;swapchainDirty=resources.dirty;
+            swapchain=std::move(resources.swapchain);swapchainImages=std::move(resources.images);
+            swapchainImageViews=std::move(resources.views);swapchainImageViewsRaw=std::move(resources.rawViews);
+            headlessTextures=std::move(resources.textures);headlessCommandPool=std::move(resources.commandPool);
+            headlessCommandBuffersPre=std::move(resources.before);headlessCommandBuffersPost=std::move(resources.after);
+            headlessOutputBuffers=std::move(resources.buffers);headlessOutputAllocations=std::move(resources.allocations);
+            headlessFences=std::move(resources.copyFences);imageAvailableSemaphores=std::move(resources.available);
+            renderFinishedSemaphores=std::move(resources.finished);fences=std::move(resources.fences);
+            imagesInFlight=std::move(resources.imagesInFlight);inFlightFences=std::move(resources.inFlight);
+            offscreenPixels=std::move(resources.pixels);
+        }
         vk::Extent2D chooseSwapchainExtent(const vk::SurfaceCapabilitiesKHR& capabilities) {
             if(capabilities.currentExtent.width != std::numeric_limits<uint32_t>::max()) {
                 window_width = capabilities.currentExtent.width;
